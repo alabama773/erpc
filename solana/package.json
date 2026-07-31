@@ -1,0 +1,24 @@
+{
+  "name": "solana-fallback-indexer",
+  "version": "1.0.0",
+  "description": "Solana fallback RPC layer + USDC deposit indexer + rate-limit/failover test",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "serve": "tsx src/server.ts",
+    "index:block": "tsx src/index-block.ts",
+    "index:addresses": "tsx src/index-addresses.ts",
+    "test:ratelimit": "tsx src/ratelimit-test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.98.0",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
