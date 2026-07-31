@@ -124,6 +124,45 @@ export function aggregateByOwner(records: DepositRecord[]): Map<string, OwnerTot
   return totals;
 }
 
+export interface UsdcTransfer {
+  from: string | null; // sender (USDC balance decreased); MULTIPLE(n) if ambiguous
+  to: string; // receiver (USDC balance increased)
+  amountRaw: bigint;
+  decimals: number;
+  signature?: string;
+  slot?: number;
+}
+
+/**
+ * Derive from -> to USDC transfers for a single transaction by pairing the
+ * accounts that lost USDC (senders) with those that gained it (receivers).
+ * - 1 sender  -> every receiver's `from` is that sender.
+ * - N senders -> `from` = "MULTIPLE(N)" (a swap/router; exact pairing ambiguous).
+ * - 0 senders -> `from` = null (mint/unwrap or sender not USDC-side of this tx).
+ */
+export function extractUsdcTransfers(
+  deltas: UsdcDelta[],
+  ctx: { signature?: string; slot?: number } = {},
+): UsdcTransfer[] {
+  const senders = deltas.filter((d) => d.deltaRaw < 0n && d.owner);
+  const receivers = deltas.filter((d) => d.deltaRaw > 0n && d.owner);
+  if (receivers.length === 0) return [];
+
+  let from: string | null;
+  if (senders.length === 1) from = senders[0]!.owner;
+  else if (senders.length === 0) from = null;
+  else from = `MULTIPLE(${senders.length})`;
+
+  return receivers.map((r) => ({
+    from,
+    to: r.owner!,
+    amountRaw: r.deltaRaw,
+    decimals: r.decimals,
+    signature: ctx.signature,
+    slot: ctx.slot,
+  }));
+}
+
 /** Format a raw integer token amount into a decimal string (no rounding). */
 export function formatUsdc(raw: bigint, decimals: number): string {
   const neg = raw < 0n;

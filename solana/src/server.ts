@@ -20,8 +20,15 @@
  * This is intentionally dependency-free (Node's built-in http module).
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { loadProviders } from "./config.js";
+import { loadProviders, USDC_MINT } from "./config.js";
 import { FailoverRpcClient } from "./failover-client.js";
+import {
+  extractUsdcDeltas,
+  extractUsdcTransfers,
+  formatUsdc,
+  type TxMeta,
+  type UsdcTransfer,
+} from "./usdc-indexer.js";
 
 const PORT = Number(process.env.PORT ?? 4100);
 
@@ -82,6 +89,122 @@ async function handleSingle(
   }
 }
 
+interface BlockTx {
+  meta: TxMeta | null;
+  transaction: { signatures?: string[] } | null;
+}
+interface GetBlockResult {
+  transactions?: BlockTx[];
+}
+
+interface TokenAccountsByOwner {
+  value: Array<{ pubkey: string }>;
+}
+interface SignatureInfo {
+  signature: string;
+  slot: number;
+  err: unknown;
+}
+interface TxResponse {
+  slot: number;
+  meta: TxMeta | null;
+}
+
+/** Run an async mapper with a bounded number of workers in flight. */
+async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]!);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return out;
+}
+
+/**
+ * Given a wallet address, find its USDC token accounts, scan the most recent
+ * `limit` signatures, and return every USDC transfer (from -> to) that touches
+ * the wallet. No block/slot needed - just the address.
+ */
+async function getAddressUsdcTransfers(
+  owner: string,
+  limit: number,
+): Promise<{ transfers: unknown[]; scanned: number; provider: string }> {
+  const { result: accounts, provider } = await client.call<TokenAccountsByOwner>("getTokenAccountsByOwner", [
+    owner,
+    { mint: USDC_MINT },
+    { encoding: "jsonParsed" },
+  ]);
+  const tokenAccounts = (accounts.value ?? []).map((v) => v.pubkey);
+
+  // Collect recent signatures across the wallet's USDC token accounts.
+  const sigs: SignatureInfo[] = [];
+  for (const acct of tokenAccounts) {
+    const { result } = await client.call<SignatureInfo[]>("getSignaturesForAddress", [
+      acct,
+      { limit },
+    ]);
+    for (const s of result ?? []) if (!s.err) sigs.push(s);
+  }
+
+  // Fetch each transaction (bounded concurrency) and extract USDC transfers.
+  const perTx = await mapPool(sigs, 5, async (s) => {
+    const { result: tx } = await client.call<TxResponse | null>("getTransaction", [
+      s.signature,
+      { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
+    ]);
+    if (!tx) return [] as UsdcTransfer[];
+    const deltas = extractUsdcDeltas(tx.meta, USDC_MINT);
+    return extractUsdcTransfers(deltas, { signature: s.signature, slot: tx.slot });
+  });
+
+  const transfers = perTx
+    .flat()
+    .filter((t) => t.from === owner || t.to === owner)
+    .map((t) => ({
+      direction: t.to === owner ? "in" : "out",
+      from: t.from,
+      to: t.to,
+      amount: formatUsdc(t.amountRaw, t.decimals),
+      amountRaw: t.amountRaw.toString(),
+      slot: t.slot,
+      signature: t.signature,
+    }));
+
+  return { transfers, scanned: sigs.length, provider };
+}
+
+/** Fetch a block by slot and return all USDC transfers (from -> to) in it. */
+async function getBlockUsdcTransfers(
+  slot: number,
+  addrFilter?: string,
+): Promise<{ transfers: unknown[]; total: number; matched: number; provider: string }> {
+  const { result: block, provider } = await client.call<GetBlockResult | null>("getBlock", [
+    slot,
+    { encoding: "jsonParsed", maxSupportedTransactionVersion: 0, transactionDetails: "full", rewards: false },
+  ]);
+  if (!block) return { transfers: [], total: 0, matched: 0, provider };
+
+  const all: UsdcTransfer[] = [];
+  for (const tx of block.transactions ?? []) {
+    const sig = tx.transaction?.signatures?.[0];
+    const deltas = extractUsdcDeltas(tx.meta, USDC_MINT);
+    all.push(...extractUsdcTransfers(deltas, { signature: sig, slot }));
+  }
+  const rows = addrFilter ? all.filter((t) => t.from === addrFilter || t.to === addrFilter) : all;
+  const transfers = rows.map((t) => ({
+    from: t.from,
+    to: t.to,
+    amount: formatUsdc(t.amountRaw, t.decimals),
+    amountRaw: t.amountRaw.toString(),
+    signature: t.signature,
+  }));
+  return { transfers, total: all.length, matched: rows.length, provider };
+}
+
 const server = createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
@@ -90,6 +213,65 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "GET" && req.url === "/stats") {
       sendJson(res, 200, { providers: client.getStats() });
+      return;
+    }
+    // GET /address/<addr>          recent USDC transfers touching this wallet
+    // GET /address/<addr>?limit=50 how many recent signatures to scan (default 25)
+    if (req.method === "GET" && req.url?.startsWith("/address/")) {
+      const url = new URL(req.url, `http://localhost:${PORT}`);
+      const addr = url.pathname.split("/")[2] ?? "";
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 25), 1), 200);
+      if (addr.length < 32) {
+        sendJson(res, 400, { error: "Usage: GET /address/<walletAddress>?limit=<1-200>" });
+        return;
+      }
+      try {
+        const out = await getAddressUsdcTransfers(addr, limit);
+        sendJson(
+          res,
+          200,
+          {
+            address: addr,
+            mint: USDC_MINT,
+            scannedSignatures: out.scanned,
+            matched: out.transfers.length,
+            transfers: out.transfers,
+          },
+          { "x-rpc-provider": out.provider },
+        );
+      } catch (err) {
+        sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+    // GET /block/<slot>            all USDC transfers (from -> to) in the block
+    // GET /block/<slot>?address=X  only transfers touching address X
+    if (req.method === "GET" && req.url?.startsWith("/block/")) {
+      const url = new URL(req.url, `http://localhost:${PORT}`);
+      const slotStr = url.pathname.split("/")[2] ?? "";
+      const addr = url.searchParams.get("address") ?? undefined;
+      if (!/^\d+$/.test(slotStr)) {
+        sendJson(res, 400, { error: "Usage: GET /block/<slot>?address=<optional>" });
+        return;
+      }
+      try {
+        const out = await getBlockUsdcTransfers(Number(slotStr), addr);
+        sendJson(
+          res,
+          200,
+          {
+            slot: Number(slotStr),
+            mint: USDC_MINT,
+            totalTransfers: out.total,
+            matched: out.matched,
+            filter: addr ?? null,
+            transfers: out.transfers,
+          },
+          { "x-rpc-provider": out.provider },
+        );
+      } catch (err) {
+        sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+      }
       return;
     }
     if (req.method !== "POST") {
@@ -137,7 +319,9 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.error(`Solana failover gateway listening on http://localhost:${PORT}`);
   console.error(`Providers (priority order): ${providers.map((p) => p.name).join(", ")}`);
-  console.error(`  POST /         -> Solana JSON-RPC with failover (see X-RPC-Provider header)`);
-  console.error(`  GET  /health   -> liveness + provider list`);
-  console.error(`  GET  /stats    -> per-provider counters`);
+  console.error(`  POST /             -> Solana JSON-RPC with failover (see X-RPC-Provider header)`);
+  console.error(`  GET  /health       -> liveness + provider list`);
+  console.error(`  GET  /stats        -> per-provider counters`);
+  console.error(`  GET  /block/<slot> -> all USDC transfers (from -> to) in a block`);
+  console.error(`  GET  /address/<a>  -> recent USDC transfers touching a wallet`);
 });

@@ -7,6 +7,7 @@
   "scripts": {
     "serve": "tsx src/server.ts",
     "index:block": "tsx src/index-block.ts",
+    "block:transfers": "tsx src/block-transfers.ts",
     "index:addresses": "tsx src/index-addresses.ts",
     "test:ratelimit": "tsx src/ratelimit-test.ts",
     "typecheck": "tsc --noEmit"
