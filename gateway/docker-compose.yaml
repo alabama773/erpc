@@ -1,0 +1,26 @@
+# eRPC EVM gateway (Ethereum + BSC). Solana is handled separately in ../solana.
+#
+#   docker compose up -d        # start
+#   docker compose logs -f      # watch
+#   docker compose down         # stop
+#
+# Then send requests:
+#   ETH: curl http://localhost:4000/main/evm/1  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+#   BSC: curl http://localhost:4000/main/evm/56 -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+
+services:
+  erpc:
+    image: ghcr.io/erpc/erpc:latest
+    container_name: erpc-gateway
+    restart: unless-stopped
+    ports:
+      - "4000:4000" # JSON-RPC ingress
+      - "4001:4001" # Prometheus metrics
+    volumes:
+      - ./erpc.yaml:/erpc.yaml:ro
+    environment:
+      # ~90% of the container memory limit; prevents OOM kills.
+      GOMEMLIMIT: 900MiB
+      # OPTIONAL keyed provider used by the commented upstream in erpc.yaml.
+      # DRPC_API_KEY: "your-drpc-key"
+    mem_limit: 1g

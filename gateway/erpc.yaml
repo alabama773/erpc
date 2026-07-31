@@ -1,0 +1,99 @@
+# eRPC configuration - EVM gateway for Ethereum + BSC.
+#
+# eRPC is EVM-only at runtime (type: evm). Solana is handled by the separate
+# Node/TS failover layer in ../solana, NOT here.
+#
+# Request URL pattern:  http://localhost:4000/<project>/evm/<chainId>
+#   Ethereum mainnet ->  http://localhost:4000/main/evm/1
+#   BNB Smart Chain  ->  http://localhost:4000/main/evm/56
+#
+# Fallback strategy:
+#   - The built-in `repository` provider pulls free public endpoints per chain
+#     and serves as an always-on fallback pool (no API key needed). Each chain
+#     gets multiple endpoints, so failover happens within the pool too.
+#   - Network-level failsafe (retry/hedge/circuit-breaker) moves a request
+#     across upstreams on failure - this produces the actual fallback behavior.
+
+logLevel: info
+
+server:
+  httpHostV4: "0.0.0.0"
+  httpPort: 4000
+
+metrics:
+  enabled: true
+  hostV4: "0.0.0.0"
+  port: 4001
+
+projects:
+  - id: main
+
+    # Applied to every upstream unless the upstream overrides it.
+    upstreamDefaults:
+      failsafe:
+        - matchMethod: "*"
+          timeout:
+            duration: 30s
+          retry:
+            maxAttempts: 2
+            delay: 300ms
+            jitter: 100ms
+          circuitBreaker:
+            failureThresholdCount: 5
+            failureThresholdCapacity: 10
+            halfOpenAfter: 30s
+            successThresholdCount: 3
+
+    # Provider repository = free public endpoints, auto-generated per chain.
+    # Always-on fallback pool, needs NO API keys.
+    providers:
+      - id: public
+        vendor: repository
+        onlyNetworks:
+          - evm:1    # Ethereum mainnet
+          - evm:56   # BNB Smart Chain
+
+    # OPTIONAL faster keyed primary (dRPC covers eth + bsc with one key).
+    # Uncomment and set DRPC_API_KEY in docker-compose.yaml to prefer it.
+    #
+    # upstreams:
+    #   - id: drpc
+    #     endpoint: drpc://${DRPC_API_KEY}
+    #     routing:
+    #       scoreMultipliers:
+    #         - network: ""
+    #           method: ""
+    #           overall: 2.0
+
+    # Per-network failsafe: retry across whatever upstreams are available.
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 45s
+            retry:
+              maxAttempts: 3
+              delay: 500ms
+              backoffMaxDelay: 5s
+              jitter: 200ms
+            hedge:
+              maxCount: 1
+              delay: 2s
+      - architecture: evm
+        evm:
+          chainId: 56
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 45s
+            retry:
+              maxAttempts: 3
+              delay: 500ms
+              backoffMaxDelay: 5s
+              jitter: 200ms
+            hedge:
+              maxCount: 1
+              delay: 2s
