@@ -1,93 +1,254 @@
-# erpc
+# eRPC + Solana Multi-Chain Gateway
 
+A fault-tolerant multi-chain RPC gateway with USDC transfer indexing across
+**Ethereum, BSC, and Solana**. It combines eRPC (for EVM chains) with a custom
+Solana failover layer, fronted by a single unified gateway.
 
+Every USDC transfer query returns **from, to, amount, unit, price (live USD),
+value in USD, block, and signature**.
 
-## Getting started
+---
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Why two engines?
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+eRPC is EVM-only at runtime — it does **not** support Solana (confirmed: the
+config states `Only evm is supported at runtime`, and there is no `solana`
+handler in the eRPC source). So the system uses two engines behind one address:
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/VictorTean/erpc.git
-git branch -M main
-git push -uf origin main
+                         ┌────────────────────────────────┐
+  Client ──▶ :8080 ──────┤  Unified Gateway (receptionist) │
+  (one address)          │  routes by path                 │
+                         └───────┬───────────────┬─────────┘
+                                 │               │
+                    /evm/<chain> │               │ /solana...
+                                 ▼               ▼
+                    ┌──────────────────┐  ┌──────────────────────┐
+                    │ eRPC  :4000      │  │ Solana gateway :4100  │
+                    │ ETH + BSC        │  │ 5-provider failover   │
+                    │ built-in failover│  │ + USDC indexer        │
+                    └──────────────────┘  └──────────────────────┘
 ```
 
-## Integrate with your tools
+| Service | Port | Role |
+|---|---|---|
+| Unified gateway | 8080 | One entry point; routes to eRPC or Solana (recommended) |
+| eRPC | 4000 | EVM (Ethereum + BSC) fault-tolerant proxy |
+| Solana gateway | 4100 | Solana JSON-RPC with 5-provider failover + USDC indexer |
 
-* [Set up project integrations](https://gitlab.com/VictorTean/erpc/-/settings/integrations)
+---
 
-## Collaborate with your team
+## Prerequisites
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+- Docker + Docker Compose
+- A Helius API key (for the Solana primary provider) — free public providers are
+  used as fallbacks
 
-## Test and Deploy
+---
 
-Use the built-in continuous integration in GitLab.
+## Setup
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+### 1. Configure the Solana providers
 
-***
+```bash
+cd solana
+cp .env.example .env
+```
 
-# Editing this README
+Edit `.env` and set your Helius URL (leave it empty to run only on free public
+providers):
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+```
+HELIUS_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+PUBLICNODE_RPC_URL=https://solana-rpc.publicnode.com
+DRPC_RPC_URL=https://solana.drpc.org
+ANKR_RPC_URL=https://rpc.ankr.com/solana
+SOLANA_PUBLIC_RPC_URL=https://api.mainnet-beta.solana.com
+```
 
-## Suggestions for a good README
+`.env` is git-ignored and never leaves your machine.
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+### 2. Start all three services
 
-## Name
-Choose a self-explaining name for your project.
+```bash
+cd gateway       && docker compose up -d   # eRPC (ETH/BSC) :4000
+cd ../solana     && docker compose up -d   # Solana gateway :4100
+cd ../gateway-proxy && docker compose up -d # Unified gateway :8080
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+Verify:
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+```bash
+curl http://localhost:8080/health
+# {"status":"ok","erpc":{...,"ok":true},"solana":{...,"ok":true}}
+```
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+---
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+## Usage (via the unified gateway :8080)
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+### EVM (Ethereum / BSC)
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+```bash
+# ETH latest block (1 = Ethereum, 56 = BSC)
+curl -X POST http://localhost:8080/evm/1 \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+```
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+### ETH/BSC USDC transfers (from → to)
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+```bash
+# All USDC transfers in a block
+curl "http://localhost:8080/evm/1/usdc/block/25657589"
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+# USDC transfers touching an address (scan recent blocks; range default 500)
+curl "http://localhost:8080/evm/1/usdc/address/0xADDRESS?range=300"
+```
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+> EVM has no "all transactions for an address" call, so address lookups scan a
+> block window via `eth_getLogs` (`range` = number of recent blocks).
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+### Solana
 
-## License
-For open source projects, say how it is licensed.
+```bash
+# Any Solana JSON-RPC with failover
+curl -X POST http://localhost:8080/solana \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}'
+```
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+### Solana USDC transfers (from → to)
+
+```bash
+# USDC transfers touching a wallet (limit = signatures scanned, default 25, max 200)
+curl "http://localhost:8080/solana/address/G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ?limit=30"
+
+# All USDC transfers in a block (slot)
+curl "http://localhost:8080/solana/block/435464598"
+```
+
+### USDC transfer response shape
+
+```json
+{
+  "direction": "in",
+  "from": "DPqsobys...",
+  "to": "G9L3ac8q...",
+  "amount": "20",
+  "unit": "USDC",
+  "price": 0.999622,
+  "valueUsd": "19.99",
+  "block": 436123377,
+  "signature": "..."
+}
+```
+
+---
+
+## Endpoints reference
+
+### Unified gateway `:8080`
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | Status of both backends |
+| GET | `/` | List all routes |
+| POST | `/evm/<chainId>` | Forward any EVM JSON-RPC (1=ETH, 56=BSC) |
+| GET | `/evm/<chainId>/usdc/block/<n>` | USDC transfers in an EVM block |
+| GET | `/evm/<chainId>/usdc/address/<addr>?range=N` | USDC transfers for an EVM address |
+| POST | `/solana` | Solana JSON-RPC with failover |
+| GET | `/solana/block/<slot>` | USDC transfers in a Solana block |
+| GET | `/solana/address/<addr>?limit=N` | USDC transfers for a Solana wallet |
+| GET | `/solana/health` `/solana/stats` | Solana provider status/counters |
+
+### Solana backend `:4100` (direct)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | Liveness + provider list |
+| GET | `/stats` | Per-provider counters (API keys redacted) |
+| POST | `/` | Solana JSON-RPC with failover |
+| GET | `/block/<slot>` | USDC transfers in a block |
+| GET | `/address/<addr>?limit=N` | USDC transfers for a wallet |
+
+### eRPC backend `:4000` (direct)
+
+URL pattern: `POST /main/evm/<chainId>` — standard EVM JSON-RPC.
+
+---
+
+## Failover
+
+Both engines automatically route around failed/rate-limited providers.
+
+- **Solana**: 5 providers tried in priority order (helius → publicnode → drpc →
+  ankr → solana-public). On HTTP 429 or error, the provider is put on cooldown
+  and traffic fails over to the next. Every response carries an
+  `X-RPC-Provider` header showing which one served it.
+- **eRPC**: native retry, hedge, and circuit-breaker across EVM upstreams.
+
+### Rate-limit test
+
+```bash
+cd solana
+npm run test:ratelimit -- --victim solana-public --burst 60 --rounds 4
+```
+
+Phase A hammers one provider directly to surface its real rate limit; Phase B
+sends the same load through the failover client and shows a 100% success rate
+because traffic moves to backups.
+
+---
+
+## CLI tools (Solana)
+
+```bash
+cd solana
+npm install
+
+npm run index:addresses -- <wallet> --limit 200   # total USDC received by a wallet
+npm run index:block -- 435464598                   # USDC deposits in a block
+npm run block:transfers -- 435464598               # from/to transfers in a block
+npm run test:ratelimit                             # rate-limit + failover test
+npm run serve                                      # run the Solana gateway locally
+```
+
+---
+
+## Notes
+
+- **Solana `slot` is the block number.** `getBlock` takes a slot; explorer
+  "Block N" numbers are usually slots. (Slot 435464598 maps to block height
+  413523570.)
+- **USDC decimals differ per chain**: Ethereum USDC = 6, BSC USDC = 18. Handled
+  automatically.
+- **USDC price** is fetched live from CoinGecko (cached 60s) and falls back to
+  $1.00 if the request fails, so a price lookup never breaks the gateway.
+- **`/stats` redacts API keys** — only provider hosts are shown.
+- Do not expose these gateways to the public internet without authentication.
+
+---
+
+## Project layout
+
+```
+gateway/            eRPC config (erpc.yaml) + docker-compose  — ETH/BSC
+gateway-proxy/      Unified gateway (proxy.mjs) + docker       — :8080
+solana/
+  src/
+    server.ts           Solana HTTP gateway + USDC endpoints
+    failover-client.ts  multi-provider failover client
+    usdc-indexer.ts     pre/post token-balance diffing
+    index-addresses.ts  CLI: USDC totals per wallet
+    index-block.ts      CLI: USDC deposits per block
+    block-transfers.ts  CLI: from/to transfers per block
+    ratelimit-test.ts   CLI: rate-limit + failover proof
+  .env.example
+postman/            Complete-Gateway Postman collection
+```
+
+USDC mints/contracts:
+- Solana: `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` (6 decimals)
+- Ethereum: `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (6 decimals)
+- BSC: `0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d` (18 decimals)
