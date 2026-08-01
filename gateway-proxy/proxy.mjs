@@ -61,6 +61,102 @@ function forward(targetBase, targetPath, method, headers, body) {
   });
 }
 
+// ---- EVM USDC transfer decoding (ETH + BSC) ----
+// ERC-20 Transfer(address,address,uint256) event signature.
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+// Per-chain USDC contract + decimals. NOTE: BSC USDC is 18 decimals, ETH is 6.
+const USDC = {
+  "1": { address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", decimals: 6, name: "Ethereum USDC" },
+  "56": { address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", decimals: 18, name: "BSC USDC" },
+};
+
+/** Send a JSON-RPC call to eRPC for a given chain and return the result (throws on error). */
+async function erpcRpc(chainId, method, params) {
+  const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }));
+  const r = await forward(ERPC_TARGET, `/main/evm/${chainId}`, "POST", { "content-type": "application/json" }, body);
+  const j = JSON.parse(r.body.toString("utf8"));
+  if (j.error) throw new Error(`eRPC ${method} failed: ${j.error.message ?? "unknown"}`);
+  return j.result;
+}
+
+function padAddress(addr) {
+  return "0x000000000000000000000000" + addr.toLowerCase().replace(/^0x/, "");
+}
+function addrFromTopic(topic) {
+  return "0x" + topic.slice(topic.length - 40);
+}
+function formatUnits(raw, decimals) {
+  const neg = raw < 0n;
+  const abs = neg ? -raw : raw;
+  const base = 10n ** BigInt(decimals);
+  const whole = abs / base;
+  const frac = abs % base;
+  const fracStr = frac.toString().padStart(decimals, "0").replace(/0+$/, "");
+  const bodyStr = fracStr.length ? `${whole}.${fracStr}` : `${whole}`;
+  return neg ? `-${bodyStr}` : bodyStr;
+}
+function decodeTransferLog(log, decimals) {
+  const from = addrFromTopic(log.topics[1]);
+  const to = addrFromTopic(log.topics[2]);
+  const raw = BigInt(log.data && log.data !== "0x" ? log.data : "0x0");
+  return {
+    from,
+    to,
+    amount: formatUnits(raw, decimals),
+    amountRaw: raw.toString(),
+    block: log.blockNumber ? Number(BigInt(log.blockNumber)) : null,
+    tx: log.transactionHash,
+  };
+}
+
+/** All USDC transfers (from->to) in a single EVM block. */
+async function evmBlockUsdcTransfers(chainId, blockNumber) {
+  const cfg = USDC[chainId];
+  if (!cfg) throw new Error(`No USDC config for chain ${chainId} (only 1=ETH, 56=BSC)`);
+  const blockHex = "0x" + BigInt(blockNumber).toString(16);
+  const logs = await erpcRpc(chainId, "eth_getLogs", [
+    { fromBlock: blockHex, toBlock: blockHex, address: cfg.address, topics: [TRANSFER_TOPIC] },
+  ]);
+  return { chain: chainId, token: cfg.name, transfers: (logs ?? []).map((l) => decodeTransferLog(l, cfg.decimals)) };
+}
+
+/**
+ * USDC transfers touching an address within a recent block range.
+ * EVM has no "all txns for address" call, so we scan a block window via
+ * eth_getLogs (default last 500 blocks; override with ?range=).
+ */
+async function evmAddressUsdcTransfers(chainId, addr, range) {
+  const cfg = USDC[chainId];
+  if (!cfg) throw new Error(`No USDC config for chain ${chainId} (only 1=ETH, 56=BSC)`);
+  const latest = BigInt(await erpcRpc(chainId, "eth_blockNumber", []));
+  const span = BigInt(range);
+  const fromB = "0x" + (latest > span ? latest - span : 0n).toString(16);
+  const toB = "0x" + latest.toString(16);
+  const padded = padAddress(addr);
+  const [outLogs, inLogs] = await Promise.all([
+    erpcRpc(chainId, "eth_getLogs", [{ fromBlock: fromB, toBlock: toB, address: cfg.address, topics: [TRANSFER_TOPIC, padded] }]),
+    erpcRpc(chainId, "eth_getLogs", [{ fromBlock: fromB, toBlock: toB, address: cfg.address, topics: [TRANSFER_TOPIC, null, padded] }]),
+  ]);
+  const seen = new Set();
+  const transfers = [];
+  for (const l of [...(outLogs ?? []), ...(inLogs ?? [])]) {
+    const key = `${l.transactionHash}:${l.logIndex}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const t = decodeTransferLog(l, cfg.decimals);
+    t.direction = t.to.toLowerCase() === addr.toLowerCase() ? "in" : "out";
+    transfers.push(t);
+  }
+  return {
+    chain: chainId,
+    token: cfg.name,
+    scannedFromBlock: Number(BigInt(fromB)),
+    scannedToBlock: Number(BigInt(toB)),
+    matched: transfers.length,
+    transfers,
+  };
+}
+
 async function backendHealth(target, path) {
   try {
     const r = await forward(target, path, "GET", {}, null);
@@ -104,6 +200,30 @@ const server = createServer(async (req, res) => {
 
     const body = await readBody(req);
 
+    // /evm/<chain>/usdc/block/<n>          USDC transfers (from->to) in an EVM block
+    // /evm/<chain>/usdc/address/<addr>     USDC transfers touching an address
+    //   (?range=N = how many recent blocks to scan, default 500)
+    {
+      const m = path.match(/^\/evm\/(\d+)\/usdc\/(block|address)\/(.+)$/);
+      if (m) {
+        const [, chainId, kind, value] = m;
+        try {
+          if (kind === "block") {
+            if (!/^\d+$/.test(value)) { sendJson(res, 400, { error: "block must be a number" }); return; }
+            const out = await evmBlockUsdcTransfers(chainId, value);
+            sendJson(res, 200, { ...out, block: Number(value), totalTransfers: out.transfers.length }, { "x-routed-to": "erpc+decode" });
+          } else {
+            const range = Number(url.searchParams.get("range") ?? 500);
+            const out = await evmAddressUsdcTransfers(chainId, value, range);
+            sendJson(res, 200, { address: value, ...out }, { "x-routed-to": "erpc+decode" });
+          }
+        } catch (err) {
+          sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+    }
+
     // /evm/<chainId>[/...]  -> eRPC /main/evm/<chainId>[/...]
     if (path === "/evm" || path.startsWith("/evm/")) {
       const rest = path.slice("/evm".length); // "" or "/1" etc.
@@ -138,7 +258,9 @@ server.listen(PORT, () => {
   console.error(`  Solana target: ${SOLANA_TARGET}`);
   console.error(`  POST /evm/<chainId>          -> eRPC (ETH/BSC)`);
   console.error(`  POST /solana                 -> Solana JSON-RPC (failover)`);
-  console.error(`  GET  /solana/block/<slot>    -> USDC transfers in a block`);
-  console.error(`  GET  /solana/address/<addr>  -> USDC transfers for a wallet`);
+  console.error(`  GET  /solana/block/<slot>    -> Solana USDC transfers in a block`);
+  console.error(`  GET  /solana/address/<addr>  -> Solana USDC transfers for a wallet`);
+  console.error(`  GET  /evm/<chain>/usdc/block/<n>     -> ETH/BSC USDC transfers in a block`);
+  console.error(`  GET  /evm/<chain>/usdc/address/<addr> -> ETH/BSC USDC transfers for an address`);
   console.error(`  GET  /health                 -> both backends`);
 });

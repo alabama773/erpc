@@ -41,14 +41,34 @@ Body: {"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}
 网址: http://localhost:8080/solana/address/钱包地址?limit=30
 功能: 只给地址翻它的 USDC 转账 from/to。
 
---- 链接 0-5：查某块 USDC 转账 (经接待员) ---
+--- 链接 0-5：查某块 USDC 转账 (Solana, 经接待员) ---
 方法: GET
 网址: http://localhost:8080/solana/block/slot号
-功能: 列出某块所有 USDC 转账 from/to。
+功能: 列出某 Solana 块所有 USDC 转账 from/to。
+
+--- 链接 0-6：查 ETH/BSC 某地址的 USDC 转账 from/to ---
+方法: GET
+网址: http://localhost:8080/evm/1/usdc/address/以太坊地址?range=300
+      (1=ETH, 56=BSC; range=扫最近多少个区块, 默认500)
+功能: 查 ETH 或 BSC 上某地址收到/转出的 USDC (from/to)。
+      注意: EVM 不能像 Solana 那样只给地址翻全部历史,
+      必须按区块范围查(用 eth_getLogs), 所以要带 range。
+
+--- 链接 0-7：查 ETH/BSC 某块的 USDC 转账 from/to ---
+方法: GET
+网址: http://localhost:8080/evm/1/usdc/block/区块号
+      (1=ETH, 56=BSC)
+功能: 列出 ETH 或 BSC 某个区块里所有 USDC 转账 from/to。
+
+★ 重要说明: 0-6 和 0-7 的"解析 from/to"是我们写的代码做的,
+  eRPC 只负责传数据(eth_getLogs)。eRPC 本身只会转发查询,
+  不会算 USDC 转账。ETH USDC 是 6 位小数, BSC USDC 是 18 位小数。
 
 规律: 接待员下面
-  /evm/<链ID>        转给 eRPC
-  /solana            转给 Solana(POST 根)
+  /evm/<链ID>                          转给 eRPC (原始 JSON-RPC, POST)
+  /evm/<链ID>/usdc/block/<n>           ETH/BSC USDC 转账(我们解析, GET)
+  /evm/<链ID>/usdc/address/<addr>      ETH/BSC USDC 转账(我们解析, GET)
+  /solana                              转给 Solana(POST 根)
   /solana/health /solana/block/.. /solana/address/..  转给 Solana(GET)
 
 下面的 4000 / 4100 是后端直连地址，接待员挂了才需要直接用。
