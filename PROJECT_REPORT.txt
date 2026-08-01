@@ -1,0 +1,138 @@
+================================================================
+  PROJECT REPORT: eRPC Multi-Chain RPC + Solana USDC Indexer
+  Date: 2026-08-01
+================================================================
+
+
+1. OBJECTIVES (as requested)
+----------------------------------------------------------------
+  [1] Solana fallback RPC
+  [2] Index transactions - given X wallet addresses, index their
+      USDC deposit transactions
+  [3] Rate-limit test - verify the actual rate limit and the
+      fallback mechanism
+
+  Status: ALL THREE COMPLETED AND TESTED.
+
+
+2. ARCHITECTURE
+----------------------------------------------------------------
+Two RPC paths, because eRPC is EVM-only at runtime and does NOT
+support Solana (confirmed: "Only evm is supported at runtime" in
+eRPC config; no "solana" reference in the eRPC source).
+
+  ETH / BSC  --->  eRPC (Docker, :4000)
+                   built-in providers + failover/retry/hedge/
+                   circuit-breaker (native eRPC features)
+
+  Solana     --->  Custom Node/TS failover layer (Docker, :4100)
+                   5 providers, auto-failover on 429/error,
+                   cooldown + retry/backoff, per-provider stats
+                       |
+                       +--> USDC deposit indexer
+                       +--> HTTP gateway (Postman/curl ready)
+
+DB: Optional. Per eRPC design, the cache DB is optional. Not
+required to meet the objectives. Can add Redis cache later if
+desired (Postgres not needed).
+
+
+3. TEST RESULTS
+----------------------------------------------------------------
+
+--- 3.1 eRPC EVM gateway (ETH + BSC) ---
+Live requests through eRPC returned real mainnet blocks:
+
+  Ethereum (evm/1):   block 25,655,465
+  BSC      (evm/56):  block 113,271,953
+
+  => eRPC is proxying both EVM chains correctly with built-in
+     failover across public providers (no API key required).
+
+
+--- 3.2 Solana fallback RPC ---
+Gateway healthy with 5 providers in priority order:
+  helius (primary) -> publicnode -> drpc -> ankr -> solana-public
+
+  => Any provider that rate-limits or errors is put on cooldown
+     and traffic automatically fails over to the next one.
+
+
+--- 3.3 Rate-limit + failover test (KEY RESULT) ---
+
+PHASE A - Hammer ONE provider directly, NO failover:
+  60 concurrent requests x 4 rounds against solana-public
+  Result: 200 of 240 requests throttled (429)
+  => 83.3% rate-limited. Confirms the real rate limit exists.
+
+PHASE B - Same load THROUGH the failover client:
+  60 concurrent requests x 4 rounds
+  Result: 240 of 240 succeeded
+  Failover events: 63 | rate-limit events: 63
+  Per-provider: solana-public 60 req / 60x 429 (throttled),
+                helius 120 req / 117 ok / 3x 429,
+                publicnode 123 req / 123 ok
+
+  => End-to-end success rate WITH failover: 100.0%
+  => VERDICT: PASS. The fallback mechanism absorbed the rate
+     limiting and kept every request succeeding.
+
+
+--- 3.4 USDC deposit indexing (given wallet addresses) ---
+Indexer diffs each transaction's pre/post USDC token balances
+(raw integer math, no floating-point error) to detect deposits.
+
+  Address: G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ
+  Result:  received 344.088645 USDC  (30 deposits)
+  Note:    FULL HISTORY - this wallet's USDC account has 61
+           signatures, all scanned. This is the confirmed
+           lifetime total.
+
+  (Very high-volume wallets, e.g. 40k+ signatures, need a paid
+   Helius tier / Enhanced API for full-history scans; the indexer
+   logic itself is proven correct on the complete G9L3 example.)
+
+Data verified as real Solana mainnet:
+  - our gateway's results match the official Solana endpoint
+    byte-for-byte
+  - slot advances live (~1 block / 0.4s), confirming a live chain
+  - all values cross-checkable on solscan.io
+
+
+--- 3.5 Bonus: from -> to transfer lookup ---
+Added endpoints to inspect USDC senders/receivers:
+  GET /block/<slot>        all USDC transfers (from -> to) in a block
+  GET /address/<wallet>    recent USDC transfers touching a wallet
+
+Example (block 435464598): 27 USDC transfers extracted, each with
+from / to / amount / signature.
+
+
+4. HOW TO RUN
+----------------------------------------------------------------
+  eRPC:    cd gateway && docker compose up -d      # :4000
+  Solana:  cd solana  && docker compose up -d      # :4100
+
+  ETH:  POST http://localhost:4000/main/evm/1
+  BSC:  POST http://localhost:4000/main/evm/56
+  SOL:  POST http://localhost:4100/               (JSON-RPC + failover)
+
+  Rate-limit test:  cd solana && npm run test:ratelimit
+  Index a wallet:   cd solana && npm run index:addresses -- <addr>
+
+Postman collection: postman/eRPC-Solana.postman_collection.json
+Repository:         https://gitlab.com/botahead/sol-erpc
+
+
+5. SUMMARY
+----------------------------------------------------------------
+  [DONE] Solana fallback RPC - 5 providers, auto-failover, tested
+  [DONE] USDC deposit indexing - given wallet address(es), proven
+         on full-history example (G9L3 = 344.088645 USDC)
+  [DONE] Rate-limit test - 83.3% throttled directly vs 100% success
+         through failover (PASS)
+  [DONE] eRPC handles ETH + BSC with native failover
+  [N/A ] DB - optional per eRPC; not required; Redis can be added
+
+  All objectives achieved on real mainnet data.
+================================================================

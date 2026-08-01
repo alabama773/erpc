@@ -1,0 +1,25 @@
+# Unified gateway ("receptionist") - one address (:8080) routing to both backends.
+#
+#   docker compose up -d --build   # build + start in background
+#   docker compose logs -f         # watch
+#   docker compose down            # stop
+#
+# It reaches the eRPC (:4000) and Solana (:4100) containers via the host's
+# published ports (host.docker.internal). Make sure both are running first:
+#   cd ../gateway && docker compose up -d
+#   cd ../solana  && docker compose up -d
+
+services:
+  gateway-proxy:
+    build: .
+    image: unified-gateway
+    container_name: unified-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      ERPC_TARGET: "http://host.docker.internal:4000"
+      SOLANA_TARGET: "http://host.docker.internal:4100"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

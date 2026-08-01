@@ -1,0 +1,208 @@
+================================================================
+  所有网址(Link)功能说明
+================================================================
+
+系统有三个入口：
+  统一网关(接待员) -> http://localhost:8080   ★推荐用这个，一个地址搞定
+  eRPC   (ETH/BSC)  -> http://localhost:4000   (后端，接待员会转给它)
+  Solana (含fallback) -> http://localhost:4100 (后端，接待员会转给它)
+
+规律记住：
+  - eRPC 的地址都用 POST，要贴 JSON body
+  - Solana 根地址 "/" 用 POST(贴body)；带路径的(/health /block /address)用 GET
+
+
+================================================================
+  零、统一网关 (端口 8080) ★一个地址通吃
+================================================================
+
+这是"接待员"：你只用 8080 这一个地址，它自动帮你转给
+后面的 eRPC 或 Solana。不用记 4000/4100。
+
+--- 链接 0-1：查两个后端是否都正常 ---
+方法: GET
+网址: http://localhost:8080/health
+功能: 一次看到 eRPC 和 Solana 两个后端的状态。
+
+--- 链接 0-2：查 ETH (经接待员转给 eRPC) ---
+方法: POST
+网址: http://localhost:8080/evm/1
+Body: {"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}
+功能: 查以太坊最新区块。(56 = BSC)
+
+--- 链接 0-3：查 Solana (经接待员转给 Solana 层) ---
+方法: POST
+网址: http://localhost:8080/solana
+Body: {"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}
+功能: 任意 Solana 查询，自动 fallback。看返回头 X-RPC-Provider。
+
+--- 链接 0-4：查某钱包 USDC 转账 (经接待员) ---
+方法: GET
+网址: http://localhost:8080/solana/address/钱包地址?limit=30
+功能: 只给地址翻它的 USDC 转账 from/to。
+
+--- 链接 0-5：查某块 USDC 转账 (经接待员) ---
+方法: GET
+网址: http://localhost:8080/solana/block/slot号
+功能: 列出某块所有 USDC 转账 from/to。
+
+规律: 接待员下面
+  /evm/<链ID>        转给 eRPC
+  /solana            转给 Solana(POST 根)
+  /solana/health /solana/block/.. /solana/address/..  转给 Solana(GET)
+
+下面的 4000 / 4100 是后端直连地址，接待员挂了才需要直接用。
+
+
+================================================================
+  一、eRPC 网址 (端口 4000, 管 ETH / BSC)
+================================================================
+
+所有 eRPC 请求都用 POST，只换地址里的链ID 和 body 里的 method。
+链ID：  1 = 以太坊(ETH)   56 = 币安链(BSC)
+
+
+--- 链接 1：查以太坊最新区块 ---
+方法: POST
+网址: http://localhost:4000/main/evm/1
+Body: {"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}
+功能: 返回以太坊当前区块号，证明 eRPC 在正常代理 ETH。
+
+
+--- 链接 2：查 BSC 最新区块 ---
+方法: POST
+网址: http://localhost:4000/main/evm/56
+Body: {"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}
+功能: 返回 BSC 当前区块号，证明 eRPC 在正常代理 BSC。
+
+
+--- 链接 3：查某地址的 ETH 余额 ---
+方法: POST
+网址: http://localhost:4000/main/evm/1
+Body: {"jsonrpc":"2.0","method":"eth_getBalance","params":["0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045","latest"],"id":1}
+功能: 返回某个以太坊地址的 ETH 余额。
+
+
+--- 链接 4：查当前 gas 价格 ---
+方法: POST
+网址: http://localhost:4000/main/evm/1
+Body: {"jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":1}
+功能: 返回以太坊当前的手续费(gas)价格。
+
+
+--- 链接 5：eRPC 监控指标 ---
+方法: GET (浏览器直接打开即可)
+网址: http://localhost:4001/metrics
+功能: 显示 eRPC 自己的运行数据(请求量、错误率等)，给监控系统用。
+
+
+================================================================
+  二、Solana 网址 (端口 4100, 管 Solana + fallback)
+================================================================
+
+--- 链接 6：健康检查 ---
+方法: GET
+网址: http://localhost:4100/health
+功能: 确认 Solana 网关在运行，并列出接了哪 5 个数据源
+      (helius, publicnode, drpc, ankr, solana-public)。
+
+
+--- 链接 7：各数据源使用统计 ---
+方法: GET
+网址: http://localhost:4100/stats
+功能: 显示每个数据源被用了多少次、成功/被限流(429)多少次。
+      用来观察 fallback(自动换源)有没有在工作。
+
+
+--- 链接 8：查当前 slot(区块高度) ---
+方法: POST
+网址: http://localhost:4100/
+Body: {"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}
+功能: 返回 Solana 当前 slot 号。数字会实时增长，
+      连发两次数字变大 = 证明连的是真实活着的主网。
+
+
+--- 链接 9：查某钱包的 SOL 余额 ---
+方法: POST
+网址: http://localhost:4100/
+Body: {"jsonrpc":"2.0","id":1,"method":"getBalance","params":["钱包地址"]}
+功能: 返回某个 Solana 钱包的 SOL 原生余额。
+
+
+--- 链接 10：查某钱包的 USDC 账户 ---
+方法: POST
+网址: http://localhost:4100/
+Body: {"jsonrpc":"2.0","id":1,"method":"getTokenAccountsByOwner","params":["钱包地址",{"mint":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"},{"encoding":"jsonParsed"}]}
+功能: 找出某个钱包的 USDC 代币账户和余额。
+
+
+--- 链接 11：查某钱包的 USDC 转账(from/to) ★重点 ---
+方法: GET
+网址: http://localhost:4100/address/钱包地址?limit=30
+例子: http://localhost:4100/address/G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ?limit=30
+功能: 只给地址就能翻出它最近的 USDC 转账，每笔显示
+      方向(收到in/转出out)、from(转出方)、to(收款方)、金额、签名。
+      limit = 扫最近多少笔(默认25，最大200)。
+
+
+--- 链接 12：查某个区块的 USDC 转账(from/to) ★重点 ---
+方法: GET
+网址: http://localhost:4100/block/slot号
+例子: http://localhost:4100/block/435464598
+功能: 列出某个区块里所有的 USDC 转账，每笔显示
+      from(转出方)、to(收款方)、金额、签名。
+      可加 ?address=某地址 只看涉及该地址的转账。
+
+
+--- 链接 13：任意 Solana 查询(带fallback) ---
+方法: POST
+网址: http://localhost:4100/
+Body: 任何标准 Solana JSON-RPC，例如 getSlot / getBalance /
+      getSignaturesForAddress / getTransaction / getBlock 等
+功能: 这是 Solana 的万能入口。任何标准 Solana 请求发到这里，
+      都会自动享受 5 源 fallback。
+      ★发完看返回的 Headers 里的 X-RPC-Provider，
+        就知道是哪个数据源服务的(证明 fallback)。
+
+
+================================================================
+  三、对应老板三个目标，该给哪些 link 当结果
+================================================================
+
+目标1 Solana fallback RPC:
+    链接 6 (/health 看5个源) + 链接 13 (看 X-RPC-Provider 头)
+
+目标2 索引 USDC 入账:
+    链接 11 (/address/钱包 查该钱包收到的USDC from/to)
+
+目标3 限流+fallback 测试:
+    命令行: cd solana → npm.cmd run test:ratelimit
+    (这个是脚本测试，不是网址)
+
+eRPC 管 ETH/BSC:
+    链接 1 (ETH) + 链接 2 (BSC)
+
+
+================================================================
+  四、怎么把结果发给老板
+================================================================
+
+1. 在 Postman 发对应请求
+2. 截图返回结果(能看到网址 + 返回的内容)
+3. 发给老板
+
+或者直接发那份 PROJECT_REPORT.txt (已经整理好所有测试结果)。
+
+
+================================================================
+  常见错误
+================================================================
+
+错误: "Use POST with a JSON-RPC body, or GET /health, GET /stats"
+原因: 根地址 http://localhost:4100/ 用了 GET
+解决: 改成 POST，并在 Body 贴 JSON
+
+错误: (405) Method Not Allowed
+原因: 方法用反了(该POST用了GET，或反之)
+解决: 对照上面每个链接标的方法
+================================================================
