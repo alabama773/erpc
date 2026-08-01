@@ -1,0 +1,172 @@
+================================================================
+  Postman 测试指南 - Solana Gateway (sol-erpc)
+================================================================
+
+服务地址: http://localhost:4100
+容器: solana-gateway (Docker, 后台运行)
+
+先确认服务在跑:
+  浏览器打开 http://localhost:4100/health
+  看到 {"status":"ok","providers":[...5个...]} 就是正常
+
+
+================================================================
+  Postman 通用步骤 (每个请求都这样)
+================================================================
+
+1. 打开 Postman, 点 "+" 新建请求
+2. 选方法 (POST 或 GET, 下面每个会标)
+3. 地址栏贴 URL
+4. 如果是 POST: 点 Body -> 选 raw -> 右边格式选 JSON -> 贴 body
+5. 点 Send
+6. 想看是哪个数据源服务的: 看返回的 Headers 标签 -> X-RPC-Provider
+
+★ 规律:
+  根地址 http://localhost:4100/  用 POST (要贴 body)
+  带路径的 (/health /stats /block /address) 用 GET (不贴 body)
+
+
+================================================================
+  一、基础检查
+================================================================
+
+--- 测试 1: 健康检查 ---
+方法: GET
+地址: http://localhost:4100/health
+预期: {"status":"ok","providers":["helius","publicnode","drpc","ankr","solana-public"]}
+作用: 确认服务在跑, 5个数据源都在
+
+--- 测试 2: 数据源使用统计 ---
+方法: GET
+地址: http://localhost:4100/stats
+预期: 每个数据源的请求数/成功数/限流数 (已做安全处理, 不会显示 API key)
+作用: 观察 fallback 有没有在工作
+
+
+================================================================
+  二、基础查询 (根地址, POST)
+================================================================
+
+--- 测试 3: 查当前 slot (证明是真实活链) ---
+方法: POST
+地址: http://localhost:4100/
+Body:
+{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}
+预期: 返回一个数字, 连发两次数字会变大 (Solana 约 0.4 秒一个 slot)
+作用: 证明连的是真实运行的 Solana 主网
+
+--- 测试 4: 查钱包 SOL 余额 ---
+方法: POST
+地址: http://localhost:4100/
+Body:
+{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ"]}
+
+--- 测试 5: 查钱包的 USDC 账户 ---
+方法: POST
+地址: http://localhost:4100/
+Body:
+{"jsonrpc":"2.0","id":1,"method":"getTokenAccountsByOwner","params":["G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ",{"mint":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"},{"encoding":"jsonParsed"}]}
+
+
+================================================================
+  三、★核心: USDC 转账查询 (from/to/block/price/单位)
+================================================================
+   老板要的 from、to、block、price、单位 都在这两个接口里
+
+--- 测试 6: 查某个区块的所有 USDC 转账 ---
+方法: GET
+地址: http://localhost:4100/block/435464598
+预期: 返回该区块所有 USDC 转账, 每笔包含:
+  from      转出方地址
+  to        收款方地址
+  amount    金额
+  unit      单位 (USDC)
+  price     实时美元价 (约 $1.00, 从 CoinGecko 拉)
+  valueUsd  美元价值 = 金额 x 价格
+  block     区块号
+  signature 交易签名
+
+只看涉及某地址的: 地址后加 ?address=某地址
+  http://localhost:4100/block/435464598?address=6LY1JzAFVZsP2a2xKrtU6znQMQ5h4i7tocWdgrkZzkzF
+
+--- 测试 7: 查某个钱包的 USDC 转账 (只给地址就能翻) ---
+方法: GET
+地址: http://localhost:4100/address/G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ?limit=30
+预期: 返回该钱包最近的 USDC 转账, 每笔包含:
+  direction 方向 (in=收到 / out=转出)
+  from      转出方
+  to        收款方
+  amount    金额
+  unit      单位 (USDC)
+  price     实时美元价
+  valueUsd  美元价值
+  block     区块号
+  signature 交易签名
+
+limit = 扫最近多少笔 (默认25, 最大200)
+把地址换成任何你要查的钱包即可
+
+
+================================================================
+  四、返回数据长这样 (测试 7 示例)
+================================================================
+
+{
+  "address": "G9L3ac8q...",
+  "scannedSignatures": 30,
+  "matched": 25,
+  "transfers": [
+    {
+      "direction": "out",
+      "from": "G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ",
+      "to":   "CXEsHru4hskEtjTEUBvh4gZAwuytmuUnAFP3Kefss5H7",
+      "amount": "19.600084",
+      "unit": "USDC",
+      "price": 0.999607,
+      "valueUsd": "19.59",
+      "block": 436123377,
+      "signature": "...."
+    }
+  ]
+}
+
+
+================================================================
+  五、怎么把结果发给老板
+================================================================
+
+1. 在 Postman 发 测试6 或 测试7
+2. 截图返回结果 (能看到 URL + from/to/block/price/单位)
+3. 发给老板
+
+重点截这两个 (覆盖老板全部要求):
+  测试 7  /address/钱包  -> 证明能查钱包 USDC 转账, 有 from/to/block/price/单位
+  测试 6  /block/区块    -> 证明能查区块内所有 USDC 转账
+
+
+================================================================
+  常见错误
+================================================================
+
+错误: "Use POST with a JSON-RPC body, or GET /health, GET /stats"
+原因: 根地址 http://localhost:4100/ 用了 GET
+解决: 改成 POST, Body 贴 JSON
+
+错误: 连不上 / Could not send request
+原因: 服务没开
+解决: 打开 PowerShell, 执行:
+      cd C:\Users\USER\erpc\solana
+      docker compose up -d
+      (等几秒再试)
+
+
+================================================================
+  Solana 常用 method (根地址 POST 都能用, 带 fallback)
+================================================================
+  getSlot                    当前区块高度
+  getBalance                 SOL 余额
+  getTokenAccountsByOwner    查某代币账户
+  getSignaturesForAddress    某地址交易签名列表
+  getTransaction             单笔交易详情
+  getBlock                   整个区块
+================================================================

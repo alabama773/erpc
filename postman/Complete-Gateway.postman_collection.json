@@ -1,0 +1,260 @@
+{
+  "info": {
+    "name": "eRPC + Solana Multi-Chain Gateway (Complete)",
+    "description": "Complete collection covering all three services:\n\n1. Unified Gateway (:8080) - one address, auto-routes to eRPC or Solana. RECOMMENDED.\n2. eRPC backend (:4000) - EVM (ETH/BSC) fault-tolerant proxy.\n3. Solana backend (:4100) - Solana failover RPC + USDC indexer.\n\nStart services:\n  cd gateway       && docker compose up -d\n  cd solana        && docker compose up -d\n  cd gateway-proxy && docker compose up -d\n\nUSDC transfer endpoints return: from, to, amount, unit (USDC), price (live USD), valueUsd, block, signature.\n\nResponses carry X-RPC-Provider (Solana) or x-routed-to (gateway) headers so you can see which backend/provider served each call.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "gw", "value": "http://localhost:8080", "type": "string" },
+    { "key": "erpc", "value": "http://localhost:4000", "type": "string" },
+    { "key": "solana", "value": "http://localhost:4100", "type": "string" },
+    { "key": "sol_wallet", "value": "G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ", "type": "string" },
+    { "key": "sol_wallet2", "value": "5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD", "type": "string" },
+    { "key": "sol_usdc_mint", "value": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "type": "string" },
+    { "key": "sol_slot", "value": "435464598", "type": "string" },
+    { "key": "eth_usdc_addr", "value": "0x55FE002aefF02F77364de339a1292923A15844B8", "type": "string" },
+    { "key": "eth_block", "value": "25657589", "type": "string" },
+    { "key": "vitalik", "value": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Unified Gateway :8080 (recommended)",
+      "item": [
+        {
+          "name": "GET /health (both backends)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gw}}/health", "host": ["{{gw}}"], "path": ["health"] },
+            "description": "Status of eRPC + Solana backends."
+          }
+        },
+        {
+          "name": "GET / (list all routes)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gw}}/", "host": ["{{gw}}"], "path": [""] }
+          }
+        },
+        {
+          "name": "POST /evm/1 - ETH block number",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{gw}}/evm/1", "host": ["{{gw}}"], "path": ["evm", "1"] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"eth_blockNumber\",\n  \"params\": [],\n  \"id\": 1\n}" }
+          }
+        },
+        {
+          "name": "POST /evm/56 - BSC block number",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{gw}}/evm/56", "host": ["{{gw}}"], "path": ["evm", "56"] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"eth_blockNumber\",\n  \"params\": [],\n  \"id\": 1\n}" }
+          }
+        },
+        {
+          "name": "POST /evm/1 - ETH getBalance",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{gw}}/evm/1", "host": ["{{gw}}"], "path": ["evm", "1"] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"eth_getBalance\",\n  \"params\": [\"{{vitalik}}\", \"latest\"],\n  \"id\": 1\n}" }
+          }
+        },
+        {
+          "name": "GET /evm/1/usdc/address - ETH USDC transfers (from/to/block/price)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gw}}/evm/1/usdc/address/{{eth_usdc_addr}}?range=300", "host": ["{{gw}}"], "path": ["evm", "1", "usdc", "address", "{{eth_usdc_addr}}"], "query": [{ "key": "range", "value": "300" }] },
+            "description": "ETH USDC transfers touching an address. range = recent blocks to scan (default 500). 56 = BSC."
+          }
+        },
+        {
+          "name": "GET /evm/1/usdc/block - ETH block USDC transfers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gw}}/evm/1/usdc/block/{{eth_block}}", "host": ["{{gw}}"], "path": ["evm", "1", "usdc", "block", "{{eth_block}}"] },
+            "description": "All USDC transfers in an ETH block. Use POST /evm/1 eth_blockNumber first to get a fresh block number."
+          }
+        },
+        {
+          "name": "POST /solana - getSlot (failover)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{gw}}/solana", "host": ["{{gw}}"], "path": ["solana"] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getSlot\",\n  \"params\": []\n}" }
+          }
+        },
+        {
+          "name": "GET /solana/address - Solana USDC transfers (from/to/block/price)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gw}}/solana/address/{{sol_wallet}}?limit=30", "host": ["{{gw}}"], "path": ["solana", "address", "{{sol_wallet}}"], "query": [{ "key": "limit", "value": "30" }] }
+          }
+        },
+        {
+          "name": "GET /solana/block - Solana block USDC transfers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gw}}/solana/block/{{sol_slot}}", "host": ["{{gw}}"], "path": ["solana", "block", "{{sol_slot}}"] }
+          }
+        },
+        {
+          "name": "GET /solana/health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gw}}/solana/health", "host": ["{{gw}}"], "path": ["solana", "health"] }
+          }
+        },
+        {
+          "name": "GET /solana/stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gw}}/solana/stats", "host": ["{{gw}}"], "path": ["solana", "stats"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. eRPC backend :4000 (ETH/BSC direct)",
+      "item": [
+        {
+          "name": "ETH eth_blockNumber",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{erpc}}/main/evm/1", "host": ["{{erpc}}"], "path": ["main", "evm", "1"] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"eth_blockNumber\",\n  \"params\": [],\n  \"id\": 1\n}" }
+          }
+        },
+        {
+          "name": "BSC eth_blockNumber",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{erpc}}/main/evm/56", "host": ["{{erpc}}"], "path": ["main", "evm", "56"] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"eth_blockNumber\",\n  \"params\": [],\n  \"id\": 1\n}" }
+          }
+        },
+        {
+          "name": "ETH eth_chainId",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{erpc}}/main/evm/1", "host": ["{{erpc}}"], "path": ["main", "evm", "1"] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"eth_chainId\",\n  \"params\": [],\n  \"id\": 1\n}" }
+          }
+        },
+        {
+          "name": "ETH eth_gasPrice",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{erpc}}/main/evm/1", "host": ["{{erpc}}"], "path": ["main", "evm", "1"] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"eth_gasPrice\",\n  \"params\": [],\n  \"id\": 1\n}" }
+          }
+        },
+        {
+          "name": "ETH eth_getBalance (vitalik)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{erpc}}/main/evm/1", "host": ["{{erpc}}"], "path": ["main", "evm", "1"] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"eth_getBalance\",\n  \"params\": [\"{{vitalik}}\", \"latest\"],\n  \"id\": 1\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Solana backend :4100 (direct)",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/health", "host": ["{{solana}}"], "path": ["health"] }
+          }
+        },
+        {
+          "name": "GET /stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/stats", "host": ["{{solana}}"], "path": ["stats"] }
+          }
+        },
+        {
+          "name": "getSlot (proves live chain)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getSlot\",\n  \"params\": []\n}" }
+          }
+        },
+        {
+          "name": "getBalance (SOL)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getBalance\",\n  \"params\": [\"{{sol_wallet}}\"]\n}" }
+          }
+        },
+        {
+          "name": "getTokenAccountsByOwner (USDC)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getTokenAccountsByOwner\",\n  \"params\": [\n    \"{{sol_wallet}}\",\n    { \"mint\": \"{{sol_usdc_mint}}\" },\n    { \"encoding\": \"jsonParsed\" }\n  ]\n}" }
+          }
+        },
+        {
+          "name": "getSignaturesForAddress",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getSignaturesForAddress\",\n  \"params\": [\n    \"{{sol_wallet}}\",\n    { \"limit\": 10 }\n  ]\n}" }
+          }
+        },
+        {
+          "name": "GET /address - USDC transfers (from/to/block/price/unit)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/address/{{sol_wallet}}?limit=30", "host": ["{{solana}}"], "path": ["address", "{{sol_wallet}}"], "query": [{ "key": "limit", "value": "30" }] }
+          }
+        },
+        {
+          "name": "GET /block - USDC transfers (from/to/block/price/unit)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/block/{{sol_slot}}", "host": ["{{solana}}"], "path": ["block", "{{sol_slot}}"] }
+          }
+        },
+        {
+          "name": "GET /block?address= - filter one address",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/block/{{sol_slot}}?address=6LY1JzAFVZsP2a2xKrtU6znQMQ5h4i7tocWdgrkZzkzF", "host": ["{{solana}}"], "path": ["block", "{{sol_slot}}"], "query": [{ "key": "address", "value": "6LY1JzAFVZsP2a2xKrtU6znQMQ5h4i7tocWdgrkZzkzF" }] }
+          }
+        }
+      ]
+    }
+  ]
+}
