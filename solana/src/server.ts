@@ -124,6 +124,42 @@ async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T) => P
   return out;
 }
 
+// ---- USDC price (USD) with a short in-memory cache ----
+let priceCache = { value: 1.0, at: 0 };
+const PRICE_TTL_MS = 60_000; // refresh at most once a minute
+
+/**
+ * Current USDC price in USD. USDC is a stablecoin (~$1.00). We fetch the live
+ * price from CoinGecko's free endpoint (cached 60s) and fall back to 1.0 if the
+ * request fails, so the gateway never breaks over a price lookup.
+ */
+async function getUsdcPrice(): Promise<number> {
+  const now = Date.now();
+  if (now - priceCache.at < PRICE_TTL_MS) return priceCache.value;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(
+      "https://api.coingecko.com/api/v3/simple/price?ids=usd-coin&vs_currencies=usd",
+      { signal: controller.signal },
+    );
+    clearTimeout(timer);
+    const j = (await res.json()) as { "usd-coin"?: { usd?: number } };
+    const p = j["usd-coin"]?.usd;
+    if (typeof p === "number" && p > 0) priceCache = { value: p, at: now };
+  } catch {
+    // keep last known / fallback value
+  }
+  return priceCache.value;
+}
+
+/** Multiply a decimal amount string by price, return a 2-dp USD string. */
+function toUsd(amount: string, price: number): string {
+  const n = Number(amount);
+  if (!isFinite(n)) return "0.00";
+  return (n * price).toFixed(2);
+}
+
 /**
  * Given a wallet address, find its USDC token accounts, scan the most recent
  * `limit` signatures, and return every USDC transfer (from -> to) that touches
@@ -133,6 +169,7 @@ async function getAddressUsdcTransfers(
   owner: string,
   limit: number,
 ): Promise<{ transfers: unknown[]; scanned: number; provider: string }> {
+  const price = await getUsdcPrice();
   const { result: accounts, provider } = await client.call<TokenAccountsByOwner>("getTokenAccountsByOwner", [
     owner,
     { mint: USDC_MINT },
@@ -170,6 +207,10 @@ async function getAddressUsdcTransfers(
       to: t.to,
       amount: formatUsdc(t.amountRaw, t.decimals),
       amountRaw: t.amountRaw.toString(),
+      unit: "USDC",
+      price: price,
+      valueUsd: toUsd(formatUsdc(t.amountRaw, t.decimals), price),
+      block: t.slot, // on Solana the slot IS the block number
       slot: t.slot,
       signature: t.signature,
     }));
@@ -182,6 +223,7 @@ async function getBlockUsdcTransfers(
   slot: number,
   addrFilter?: string,
 ): Promise<{ transfers: unknown[]; total: number; matched: number; provider: string }> {
+  const price = await getUsdcPrice();
   const { result: block, provider } = await client.call<GetBlockResult | null>("getBlock", [
     slot,
     { encoding: "jsonParsed", maxSupportedTransactionVersion: 0, transactionDetails: "full", rewards: false },
@@ -200,6 +242,10 @@ async function getBlockUsdcTransfers(
     to: t.to,
     amount: formatUsdc(t.amountRaw, t.decimals),
     amountRaw: t.amountRaw.toString(),
+    unit: "USDC",
+    price: price,
+    valueUsd: toUsd(formatUsdc(t.amountRaw, t.decimals), price),
+    block: t.slot ?? slot, // on Solana the slot IS the block number
     signature: t.signature,
   }));
   return { transfers, total: all.length, matched: rows.length, provider };
@@ -212,7 +258,19 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && req.url === "/stats") {
-      sendJson(res, 200, { providers: client.getStats() });
+      // Redact the URL so API keys are never exposed via /stats. Keep only
+      // the host (no query string / no ?api-key=...).
+      const safe = client.getStats().map((s) => {
+        let host = s.url;
+        try {
+          host = new URL(s.url).host;
+        } catch {
+          host = "";
+        }
+        const { url, ...rest } = s;
+        return { ...rest, host };
+      });
+      sendJson(res, 200, { providers: safe });
       return;
     }
     // GET /address/<addr>          recent USDC transfers touching this wallet

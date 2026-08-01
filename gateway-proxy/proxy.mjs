@@ -70,6 +70,31 @@ const USDC = {
   "56": { address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", decimals: 18, name: "BSC USDC" },
 };
 
+// ---- USDC price (USD) with a short in-memory cache ----
+let priceCache = { value: 1.0, at: 0 };
+const PRICE_TTL_MS = 60_000;
+async function getUsdcPrice() {
+  const now = Date.now();
+  if (now - priceCache.at < PRICE_TTL_MS) return priceCache.value;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=usd-coin&vs_currencies=usd", { signal: controller.signal });
+    clearTimeout(timer);
+    const j = await res.json();
+    const p = j?.["usd-coin"]?.usd;
+    if (typeof p === "number" && p > 0) priceCache = { value: p, at: now };
+  } catch {
+    // keep last known / fallback value
+  }
+  return priceCache.value;
+}
+function toUsd(amount, price) {
+  const n = Number(amount);
+  if (!isFinite(n)) return "0.00";
+  return (n * price).toFixed(2);
+}
+
 /** Send a JSON-RPC call to eRPC for a given chain and return the result (throws on error). */
 async function erpcRpc(chainId, method, params) {
   const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }));
@@ -95,15 +120,19 @@ function formatUnits(raw, decimals) {
   const bodyStr = fracStr.length ? `${whole}.${fracStr}` : `${whole}`;
   return neg ? `-${bodyStr}` : bodyStr;
 }
-function decodeTransferLog(log, decimals) {
+function decodeTransferLog(log, decimals, price) {
   const from = addrFromTopic(log.topics[1]);
   const to = addrFromTopic(log.topics[2]);
   const raw = BigInt(log.data && log.data !== "0x" ? log.data : "0x0");
+  const amount = formatUnits(raw, decimals);
   return {
     from,
     to,
-    amount: formatUnits(raw, decimals),
+    amount,
     amountRaw: raw.toString(),
+    unit: "USDC",
+    price: price,
+    valueUsd: toUsd(amount, price),
     block: log.blockNumber ? Number(BigInt(log.blockNumber)) : null,
     tx: log.transactionHash,
   };
@@ -113,11 +142,12 @@ function decodeTransferLog(log, decimals) {
 async function evmBlockUsdcTransfers(chainId, blockNumber) {
   const cfg = USDC[chainId];
   if (!cfg) throw new Error(`No USDC config for chain ${chainId} (only 1=ETH, 56=BSC)`);
+  const price = await getUsdcPrice();
   const blockHex = "0x" + BigInt(blockNumber).toString(16);
   const logs = await erpcRpc(chainId, "eth_getLogs", [
     { fromBlock: blockHex, toBlock: blockHex, address: cfg.address, topics: [TRANSFER_TOPIC] },
   ]);
-  return { chain: chainId, token: cfg.name, transfers: (logs ?? []).map((l) => decodeTransferLog(l, cfg.decimals)) };
+  return { chain: chainId, token: cfg.name, transfers: (logs ?? []).map((l) => decodeTransferLog(l, cfg.decimals, price)) };
 }
 
 /**
@@ -128,6 +158,7 @@ async function evmBlockUsdcTransfers(chainId, blockNumber) {
 async function evmAddressUsdcTransfers(chainId, addr, range) {
   const cfg = USDC[chainId];
   if (!cfg) throw new Error(`No USDC config for chain ${chainId} (only 1=ETH, 56=BSC)`);
+  const price = await getUsdcPrice();
   const latest = BigInt(await erpcRpc(chainId, "eth_blockNumber", []));
   const span = BigInt(range);
   const fromB = "0x" + (latest > span ? latest - span : 0n).toString(16);
@@ -143,7 +174,7 @@ async function evmAddressUsdcTransfers(chainId, addr, range) {
     const key = `${l.transactionHash}:${l.logIndex}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const t = decodeTransferLog(l, cfg.decimals);
+    const t = decodeTransferLog(l, cfg.decimals, price);
     t.direction = t.to.toLowerCase() === addr.toLowerCase() ? "in" : "out";
     transfers.push(t);
   }
