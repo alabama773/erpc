@@ -1,40 +1,36 @@
-# eRPC + Solana Multi-Chain Gateway
+# Solana Gateway + USDC Indexer
 
-A fault-tolerant multi-chain RPC gateway with USDC transfer indexing across
-**Ethereum, BSC, and Solana**. It combines eRPC (for EVM chains) with a custom
-Solana failover layer, fronted by a single unified gateway.
+A fault-tolerant Solana RPC gateway with live USDC transfer indexing. It fronts
+five Solana RPC providers behind one address, automatically failing over on rate
+limits or errors, and exposes ready-made endpoints that turn raw transactions
+into clean USDC transfer records.
 
 Every USDC transfer query returns **from, to, amount, unit, price (live USD),
 value in USD, block, and signature**.
 
 ---
 
-## Why two engines?
+## Why a custom layer?
 
-eRPC is EVM-only at runtime — it does **not** support Solana (confirmed: the
-config states `Only evm is supported at runtime`, and there is no `solana`
-handler in the eRPC source). So the system uses two engines behind one address:
+Standard EVM RPC proxies do not understand Solana — it is a completely different
+architecture with different JSON-RPC semantics. So this project implements a
+purpose-built Solana failover layer: multiple providers tried in priority order,
+per-provider cooldown on failure, and a USDC indexer built on pre/post
+token-balance diffing.
 
 ```
-                         ┌────────────────────────────────┐
-  Client ──▶ :8080 ──────┤  Unified Gateway (receptionist) │
-  (one address)          │  routes by path                 │
-                         └───────┬───────────────┬─────────┘
-                                 │               │
-                    /evm/<chain> │               │ /solana...
-                                 ▼               ▼
-                    ┌──────────────────┐  ┌──────────────────────┐
-                    │ eRPC  :4000      │  │ Solana gateway :4100  │
-                    │ ETH + BSC        │  │ 5-provider failover   │
-                    │ built-in failover│  │ + USDC indexer        │
-                    └──────────────────┘  └──────────────────────┘
+                         ┌──────────────────────────────┐
+  Client ──▶ :4100 ──────┤  Solana gateway              │
+  (one address)          │  3-provider failover         │
+                         │  + USDC indexer              │
+                         └───────────────┬──────────────┘
+                                         │
+                    helius ▶ publicnode ▶ solana-public
 ```
 
 | Service | Port | Role |
 |---|---|---|
-| Unified gateway | 8080 | One entry point; routes to eRPC or Solana (recommended) |
-| eRPC | 4000 | EVM (Ethereum + BSC) fault-tolerant proxy |
-| Solana gateway | 4100 | Solana JSON-RPC with 5-provider failover + USDC indexer |
+| Solana gateway | 4100 | Solana JSON-RPC with multi-provider failover + USDC indexer |
 
 ---
 
@@ -42,13 +38,13 @@ handler in the eRPC source). So the system uses two engines behind one address:
 
 - Docker + Docker Compose
 - A Helius API key (for the Solana primary provider) — free public providers are
-  used as fallbacks
+  used as fallbacks, so it also runs with no key at all
 
 ---
 
 ## Setup
 
-### 1. Configure the Solana providers
+### 1. Configure the providers
 
 ```bash
 cd solana
@@ -61,71 +57,54 @@ providers):
 ```
 HELIUS_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
 PUBLICNODE_RPC_URL=https://solana-rpc.publicnode.com
-DRPC_RPC_URL=https://solana.drpc.org
-ANKR_RPC_URL=https://rpc.ankr.com/solana
 SOLANA_PUBLIC_RPC_URL=https://api.mainnet-beta.solana.com
 ```
 
+> drpc and ankr free public endpoints stopped working (HTTP 400 / 403) as of
+> 2026-08, so they are commented out in `.env`. Add them back with a working
+> URL (and API key if required) to include them in the failover chain.
+
 `.env` is git-ignored and never leaves your machine.
 
-### 2. Start all three services
+### 2. Start the service
 
 ```bash
-cd gateway       && docker compose up -d   # eRPC (ETH/BSC) :4000
-cd ../solana     && docker compose up -d   # Solana gateway :4100
-cd ../gateway-proxy && docker compose up -d # Unified gateway :8080
+cd solana && docker compose up -d   # Solana gateway :4100
 ```
 
 Verify:
 
 ```bash
-curl http://localhost:8080/health
-# {"status":"ok","erpc":{...,"ok":true},"solana":{...,"ok":true}}
+curl http://localhost:4100/health
+# {"status":"ok","providers":["helius","publicnode","solana-public"]}
 ```
 
 ---
 
-## Usage (via the unified gateway :8080)
+## Usage
 
-### EVM (Ethereum / BSC)
-
-```bash
-# ETH latest block (1 = Ethereum, 56 = BSC)
-curl -X POST http://localhost:8080/evm/1 \
-  -H "content-type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
-```
-
-### ETH/BSC USDC transfers (from → to)
+### Any Solana JSON-RPC (with failover)
 
 ```bash
-# All USDC transfers in a block
-curl "http://localhost:8080/evm/1/usdc/block/25657589"
-
-# USDC transfers touching an address (scan recent blocks; range default 500)
-curl "http://localhost:8080/evm/1/usdc/address/0xADDRESS?range=300"
-```
-
-> EVM has no "all transactions for an address" call, so address lookups scan a
-> block window via `eth_getLogs` (`range` = number of recent blocks).
-
-### Solana
-
-```bash
-# Any Solana JSON-RPC with failover
-curl -X POST http://localhost:8080/solana \
+curl -X POST http://localhost:4100/ \
   -H "content-type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}'
 ```
 
-### Solana USDC transfers (from → to)
+Every response carries an `X-RPC-Provider` header showing which provider served
+it.
+
+### USDC transfers (from → to)
 
 ```bash
 # USDC transfers touching a wallet (limit = signatures scanned, default 25, max 200)
-curl "http://localhost:8080/solana/address/G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ?limit=30"
+curl "http://localhost:4100/address/G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ?limit=30"
 
 # All USDC transfers in a block (slot)
-curl "http://localhost:8080/solana/block/435464598"
+curl "http://localhost:4100/block/435464598"
+
+# Only transfers touching one address in a block
+curl "http://localhost:4100/block/435464598?address=6LY1JzAFVZsP2a2xKrtU6znQMQ5h4i7tocWdgrkZzkzF"
 ```
 
 ### USDC transfer response shape
@@ -144,25 +123,13 @@ curl "http://localhost:8080/solana/block/435464598"
 }
 ```
 
+`direction` (in/out) is only present on `/address` lookups.
+
 ---
 
 ## Endpoints reference
 
-### Unified gateway `:8080`
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/health` | Status of both backends |
-| GET | `/` | List all routes |
-| POST | `/evm/<chainId>` | Forward any EVM JSON-RPC (1=ETH, 56=BSC) |
-| GET | `/evm/<chainId>/usdc/block/<n>` | USDC transfers in an EVM block |
-| GET | `/evm/<chainId>/usdc/address/<addr>?range=N` | USDC transfers for an EVM address |
-| POST | `/solana` | Solana JSON-RPC with failover |
-| GET | `/solana/block/<slot>` | USDC transfers in a Solana block |
-| GET | `/solana/address/<addr>?limit=N` | USDC transfers for a Solana wallet |
-| GET | `/solana/health` `/solana/stats` | Solana provider status/counters |
-
-### Solana backend `:4100` (direct)
+### Solana gateway `:4100`
 
 | Method | Path | Description |
 |---|---|---|
@@ -170,23 +137,23 @@ curl "http://localhost:8080/solana/block/435464598"
 | GET | `/stats` | Per-provider counters (API keys redacted) |
 | POST | `/` | Solana JSON-RPC with failover |
 | GET | `/block/<slot>` | USDC transfers in a block |
+| GET | `/block/<slot>?address=<addr>` | USDC transfers in a block touching one address |
 | GET | `/address/<addr>?limit=N` | USDC transfers for a wallet |
-
-### eRPC backend `:4000` (direct)
-
-URL pattern: `POST /main/evm/<chainId>` — standard EVM JSON-RPC.
 
 ---
 
 ## Failover
 
-Both engines automatically route around failed/rate-limited providers.
+Providers are tried in priority order (helius → publicnode → solana-public; drpc
+and ankr can be re-enabled in `.env`). On HTTP 429 or error, the provider is put
+on cooldown and traffic fails over to the next. Every response carries an
+`X-RPC-Provider` header showing which one served it.
 
-- **Solana**: 5 providers tried in priority order (helius → publicnode → drpc →
-  ankr → solana-public). On HTTP 429 or error, the provider is put on cooldown
-  and traffic fails over to the next. Every response carries an
-  `X-RPC-Provider` header showing which one served it.
-- **eRPC**: native retry, hedge, and circuit-breaker across EVM upstreams.
+A data-availability error (a block/slot missing on one provider, e.g. `-32001`
+block cleaned up) also fails over to a provider with longer retention, and is
+only surfaced if every provider lacks that block. Deterministic client errors
+(bad params `-32602`, unknown method `-32601`) are returned immediately without
+failing over.
 
 ### Rate-limit test
 
@@ -201,7 +168,7 @@ because traffic moves to backups.
 
 ---
 
-## CLI tools (Solana)
+## CLI tools
 
 ```bash
 cd solana
@@ -221,20 +188,17 @@ npm run serve                                      # run the Solana gateway loca
 - **Solana `slot` is the block number.** `getBlock` takes a slot; explorer
   "Block N" numbers are usually slots. (Slot 435464598 maps to block height
   413523570.)
-- **USDC decimals differ per chain**: Ethereum USDC = 6, BSC USDC = 18. Handled
-  automatically.
+- **Solana USDC has 6 decimals.** Handled automatically.
 - **USDC price** is fetched live from CoinGecko (cached 60s) and falls back to
   $1.00 if the request fails, so a price lookup never breaks the gateway.
 - **`/stats` redacts API keys** — only provider hosts are shown.
-- Do not expose these gateways to the public internet without authentication.
+- Do not expose this gateway to the public internet without authentication.
 
 ---
 
 ## Project layout
 
 ```
-gateway/            eRPC config (erpc.yaml) + docker-compose  — ETH/BSC
-gateway-proxy/      Unified gateway (proxy.mjs) + docker       — :8080
 solana/
   src/
     server.ts           Solana HTTP gateway + USDC endpoints
@@ -245,10 +209,7 @@ solana/
     block-transfers.ts  CLI: from/to transfers per block
     ratelimit-test.ts   CLI: rate-limit + failover proof
   .env.example
-postman/            Complete-Gateway Postman collection
+postman/            Solana-Gateway Postman collection
 ```
 
-USDC mints/contracts:
-- Solana: `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` (6 decimals)
-- Ethereum: `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (6 decimals)
-- BSC: `0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d` (18 decimals)
+USDC mint (Solana): `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` (6 decimals)

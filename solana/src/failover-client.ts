@@ -51,6 +51,15 @@ export type FailoverEvent =
 const HTTP_RATE_LIMIT = 429;
 // JSON-RPC error codes some Solana providers use for throttling.
 const RPC_RATE_LIMIT_CODES = new Set([429, -32005, -32029]);
+// Data-availability errors: the block/slot is missing on THIS provider but may
+// exist on another (providers have different ledger retention). These are worth
+// failing over to a provider that has the data, unlike deterministic client
+// errors (bad params, unknown method) which every provider answers the same.
+//   -32001 block cleaned up / does not exist on node
+//   -32004 block not available for slot
+//   -32007 slot skipped or missing due to ledger jump
+//   -32009 slot skipped or missing in long-term storage
+const RPC_UNAVAILABLE_CODES = new Set([-32001, -32004, -32007, -32009]);
 
 class RpcHttpError extends Error {
   constructor(
@@ -60,6 +69,31 @@ class RpcHttpError extends Error {
   ) {
     super(message);
     this.name = "RpcHttpError";
+  }
+}
+
+/**
+ * A JSON-RPC error returned by a provider that responded correctly (i.e. not a
+ * transport failure or rate limit).
+ *
+ * Two flavours, distinguished by `retriable`:
+ *   - retriable=false: a deterministic client error (invalid params, method not
+ *     found, ...). Every provider answers the same, so it is surfaced to the
+ *     caller unchanged without failing over.
+ *   - retriable=true: a data-availability error (block cleaned up / not
+ *     available). Another provider with longer retention may still have the
+ *     data, so the call fails over; the error is only surfaced if every
+ *     provider lacks the data.
+ */
+export class RpcBusinessError extends Error {
+  provider = "";
+  attempts = 0;
+  constructor(
+    readonly rpcError: { code?: number; message?: string; data?: unknown },
+    readonly retriable = false,
+  ) {
+    super(rpcError.message ?? "RPC error");
+    this.name = "RpcBusinessError";
   }
 }
 
@@ -158,12 +192,26 @@ export class FailoverRpcClient {
 
       if (json.error) {
         const code = json.error.code;
-        const rateLimited = code !== undefined && RPC_RATE_LIMIT_CODES.has(code);
-        throw new RpcHttpError(
-          `RPC error ${code ?? "?"}: ${json.error.message ?? "unknown"} from ${provider.name}`,
-          undefined,
-          rateLimited,
-        );
+        // Rate-limit style errors mean the provider is unhealthy right now:
+        // cooldown it and fail over to the next provider.
+        if (code !== undefined && RPC_RATE_LIMIT_CODES.has(code)) {
+          throw new RpcHttpError(
+            `RPC error ${code}: ${json.error.message ?? "unknown"} from ${provider.name}`,
+            undefined,
+            true,
+          );
+        }
+        // Data-availability error: this provider does not have the block/slot,
+        // but another provider with longer retention might. Mark it retriable
+        // so call() fails over instead of surfacing it right away.
+        if (code !== undefined && RPC_UNAVAILABLE_CODES.has(code)) {
+          throw new RpcBusinessError(json.error, true);
+        }
+        // Any other JSON-RPC error is a deterministic answer from a healthy
+        // provider (invalid params, method not found, ...). Every provider
+        // would return the same thing, so surface it to the caller instead of
+        // pointlessly failing over and masking it.
+        throw new RpcBusinessError(json.error);
       }
       return json.result as T;
     } finally {
@@ -183,10 +231,18 @@ export class FailoverRpcClient {
     let attempts = 0;
     let lastProvider = "";
     let lastError: unknown;
+    // Data-availability failover: providers that responded but lack the
+    // requested block/slot for THIS call. Excluded from further tries so we
+    // move on to a provider with longer retention (without cordoning them,
+    // since they are perfectly healthy for current data).
+    let lastBusinessError: RpcBusinessError | undefined;
+    const lacksData = new Set<string>();
 
     while (attempts < this.opts.maxAttemptsPerCall) {
       const now = Date.now();
-      const ordered = this.orderedProviders(now);
+      const ordered = this.orderedProviders(now).filter((p) => !lacksData.has(p.name));
+      // Every provider that responded is missing the data: stop and surface it.
+      if (ordered.length === 0) break;
       // Prefer a provider not on cooldown; if all are cooling down, use the soonest-free one.
       const provider =
         ordered.find((p) => this.stats.get(p.name)!.cooldownUntil <= now) ?? ordered[0];
@@ -204,6 +260,26 @@ export class FailoverRpcClient {
         this.emit({ type: "success", provider: provider.name, method, attempts });
         return { result, provider: provider.name, attempts };
       } catch (err) {
+        if (err instanceof RpcBusinessError) {
+          // The provider responded (it is healthy), so count it as a success
+          // and never cordon it for a business error.
+          stat.successes++;
+          err.provider = provider.name;
+          err.attempts = attempts;
+          this.emit({ type: "success", provider: provider.name, method, attempts });
+
+          if (err.retriable) {
+            // Data-availability error: this provider lacks the block/slot.
+            // Remember that and fail over to a provider that may still have it.
+            lastBusinessError = err;
+            lacksData.add(provider.name);
+            lastProvider = provider.name;
+            continue;
+          }
+          // Deterministic client error: every provider answers the same, so
+          // hand the real error straight back to the caller.
+          throw err;
+        }
         lastError = err;
         lastProvider = provider.name;
         const isRpcErr = err instanceof RpcHttpError;
@@ -244,6 +320,14 @@ export class FailoverRpcClient {
           await this.sleep(delay);
         }
       }
+    }
+
+    // Every provider that responded lacks the requested block/slot: surface the
+    // real availability error (e.g. -32001 block cleaned up) rather than a
+    // generic "exhausted" message, so the caller knows the data is simply gone.
+    if (lastBusinessError) {
+      lastBusinessError.attempts = attempts;
+      throw lastBusinessError;
     }
 
     throw new Error(

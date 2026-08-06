@@ -1,14 +1,13 @@
 ================================================================
-  Postman 全部测试链接 (Links)
+  Postman 全部测试链接 (Links) - Solana Gateway
 ================================================================
 
-系统有三个入口:
-  统一网关(接待员) -> http://localhost:8080   ★推荐,一个地址通吃
-  eRPC (ETH/BSC)   -> http://localhost:4000   (后端)
-  Solana           -> http://localhost:4100   (后端)
+服务地址: http://localhost:4100
+容器: solana-gateway (Docker, 后台运行)
 
-先确认都在跑(浏览器打开):
-  http://localhost:8080/health   看到 erpc 和 solana 都 ok 就正常
+先确认服务在跑(浏览器打开):
+  http://localhost:4100/health
+  看到 {"status":"ok","providers":[...3个...]} 就是正常
 
 
 ================================================================
@@ -22,120 +21,77 @@
 6. 看返回 Headers 里的 X-RPC-Provider (哪个数据源服务的)
 
 ★ 规律:
-  带 body 的查询(getSlot/eth_blockNumber等) 用 POST
-  带路径的(/health /stats /block /address /usdc/) 用 GET
+  根地址 http://localhost:4100/  用 POST (要贴 body)
+  带路径的 (/health /stats /block /address) 用 GET (不贴 body)
 
 
 ================================================================
-  ★ 一、统一网关 8080 (推荐,一个地址全部搞定)
+  一、基础检查
 ================================================================
 
---- L1 两个后端健康检查 ---
-GET  http://localhost:8080/health
-
---- L2 查看所有可用路由 ---
-GET  http://localhost:8080/
-
---- L3 查 ETH 最新区块 ---
-POST http://localhost:8080/evm/1
-Body: {"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}
-
---- L4 查 BSC 最新区块 ---
-POST http://localhost:8080/evm/56
-Body: {"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}
-
---- L5 查 ETH 某地址 ETH 余额 ---
-POST http://localhost:8080/evm/1
-Body: {"jsonrpc":"2.0","method":"eth_getBalance","params":["0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045","latest"],"id":1}
-
---- L6 ★ETH 某地址的 USDC 转账 (from/to/block/price/单位) ---
-GET  http://localhost:8080/evm/1/usdc/address/0x55FE002aefF02F77364de339a1292923A15844B8?range=300
-     (1=ETH, 56=BSC; range=扫最近多少个区块,默认500)
-
---- L7 ★ETH 某区块的 USDC 转账 (from/to/block/price/单位) ---
-GET  http://localhost:8080/evm/1/usdc/block/25657589
-     (把区块号换成最新的; 先用 L3 查最新区块号)
-
---- L8 Solana 查当前 slot ---
-POST http://localhost:8080/solana
-Body: {"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}
-
---- L9 ★Solana 某地址的 USDC 转账 (from/to/block/price/单位) ---
-GET  http://localhost:8080/solana/address/G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ?limit=30
-
---- L10 ★Solana 某区块的 USDC 转账 (from/to/block/price/单位) ---
-GET  http://localhost:8080/solana/block/435464598
-
---- L11 Solana 健康检查 ---
-GET  http://localhost:8080/solana/health
-
---- L12 Solana 数据源统计 ---
-GET  http://localhost:8080/solana/stats
-
-
-================================================================
-  二、eRPC 后端直连 4000 (ETH/BSC 原始查询)
-================================================================
-   全部 POST, 换地址里的链ID(1=ETH,56=BSC)和 body 的 method
-
---- L13 ETH 最新区块 ---
-POST http://localhost:4000/main/evm/1
-Body: {"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}
-
---- L14 BSC 最新区块 ---
-POST http://localhost:4000/main/evm/56
-Body: {"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}
-
---- L15 ETH 链ID ---
-POST http://localhost:4000/main/evm/1
-Body: {"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}
-
---- L16 ETH gas 价格 ---
-POST http://localhost:4000/main/evm/1
-Body: {"jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":1}
-
---- L17 eRPC 监控指标 (浏览器直接开) ---
-GET  http://localhost:4001/metrics
-
-
-================================================================
-  三、Solana 后端直连 4100
-================================================================
-
---- L18 健康检查 ---
+--- L1 健康检查 ---
 GET  http://localhost:4100/health
+功能: 确认 Solana 网关在运行, 并列出 3 个数据源
+      (helius, publicnode, solana-public)
+      (drpc / ankr 已停用: 免费端点返回 HTTP 400 / 403)
 
---- L19 数据源统计 ---
+--- L2 各数据源使用统计 ---
 GET  http://localhost:4100/stats
+功能: 显示每个数据源被用了多少次、成功/被限流(429)多少次。
+      用来观察 fallback(自动换源)有没有在工作。
 
---- L20 查当前 slot (证明真实活链,连发两次数字变大) ---
+
+================================================================
+  二、基础查询 (根地址, POST)
+================================================================
+
+--- L3 查当前 slot (证明真实活链, 连发两次数字变大) ---
 POST http://localhost:4100/
 Body: {"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}
 
---- L21 查钱包 SOL 余额 ---
+--- L4 查钱包 SOL 余额 ---
 POST http://localhost:4100/
 Body: {"jsonrpc":"2.0","id":1,"method":"getBalance","params":["G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ"]}
 
---- L22 查钱包的 USDC 账户 ---
+--- L5 查钱包的 USDC 账户 ---
 POST http://localhost:4100/
 Body: {"jsonrpc":"2.0","id":1,"method":"getTokenAccountsByOwner","params":["G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ",{"mint":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"},{"encoding":"jsonParsed"}]}
 
---- L23 查钱包最近交易签名 ---
+--- L6 查钱包最近交易签名 ---
 POST http://localhost:4100/
 Body: {"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ",{"limit":10}]}
 
---- L24 ★某地址 USDC 转账 (from/to/block/price/单位) ---
-GET  http://localhost:4100/address/G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ?limit=30
 
---- L25 ★某区块 USDC 转账 (from/to/block/price/单位) ---
+================================================================
+  三、★核心: USDC 转账查询 (from/to/block/price/单位)
+================================================================
+
+--- L7 ★某地址 USDC 转账 (from/to/block/price/单位) ---
+GET  http://localhost:4100/address/G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ?limit=30
+      limit=扫最近多少笔(默认25, 最大200)
+
+--- L8 ★某区块 USDC 转账 (from/to/block/price/单位) ---
 GET  http://localhost:4100/block/435464598
 
---- L26 某区块 + 只看某地址 ---
+--- L9 某区块 + 只看某地址 ---
 GET  http://localhost:4100/block/435464598?address=6LY1JzAFVZsP2a2xKrtU6znQMQ5h4i7tocWdgrkZzkzF
 
 
 ================================================================
-  四、USDC 转账返回的字段 (L6/L7/L9/L10/L24/L25)
+  四、任意 Solana 查询 (带 fallback)
+================================================================
+
+--- L10 任意 Solana JSON-RPC ---
+POST http://localhost:4100/
+Body: 任何标准 Solana JSON-RPC, 例如 getSlot / getBalance /
+      getSignaturesForAddress / getTransaction / getBlock 等
+功能: Solana 万能入口, 自动享受 5 源 fallback。
+      ★发完看返回 Headers 里的 X-RPC-Provider, 就知道是
+        哪个数据源服务的(证明 fallback)。
+
+
+================================================================
+  五、USDC 转账返回的字段 (L7/L8/L9)
 ================================================================
   direction 方向 (in收到 / out转出, 仅 /address 有)
   from      转出方地址
@@ -145,20 +101,17 @@ GET  http://localhost:4100/block/435464598?address=6LY1JzAFVZsP2a2xKrtU6znQMQ5h4
   price     实时美元价 (约 $1.00, 从 CoinGecko 拉)
   valueUsd  美元价值 = amount x price
   block     区块号
-  signature/tx  交易签名/哈希
+  signature 交易签名
 
 
 ================================================================
-  五、给老板演示重点截图
+  六、给老板演示重点截图
 ================================================================
-  L9 或 L24  -> Solana 钱包 USDC 转账 (from/to/block/price/单位)
-  L10 或 L25 -> Solana 区块 USDC 转账
-  L6         -> ETH 地址 USDC 转账
-  L7         -> ETH 区块 USDC 转账
-  L1         -> 两个后端都健康
+  L7 或 L8   -> Solana 钱包/区块 USDC 转账 (from/to/block/price/单位)
+  L1         -> 3 个数据源都健康
 
   演示 fallback:
-  先 L12(/stats)只有helius -> 快速连发很多次 L8 -> 再 L12 出现 publicnode
+  先 L2(/stats)只有helius -> 快速连发很多次 L3 -> 再 L2 出现 publicnode
 
 
 ================================================================
@@ -172,9 +125,7 @@ GET  http://localhost:4100/block/435464598?address=6LY1JzAFVZsP2a2xKrtU6znQMQ5h4
 
 错误: 连不上 / Could not send request
   -> 服务没开, PowerShell 执行:
-     cd C:\Users\USER\erpc\solana       ; docker compose up -d
-     cd C:\Users\USER\erpc\gateway      ; docker compose up -d
-     cd C:\Users\USER\erpc\gateway-proxy; docker compose up -d
+     cd C:\Users\USER\erpc\solana ; docker compose up -d
 
 
 ================================================================
@@ -183,7 +134,5 @@ GET  http://localhost:4100/block/435464598?address=6LY1JzAFVZsP2a2xKrtU6znQMQ5h4
   测试钱包1: G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ
   测试钱包2: 5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD
   Solana USDC mint: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
-  ETH  USDC 合约: 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 (6位小数)
-  BSC  USDC 合约: 0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d (18位小数)
   测试区块(slot): 435464598
 ================================================================

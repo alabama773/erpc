@@ -5,9 +5,9 @@
  *   PORT=4100 npm run serve
  *
  * Exposes the failover client over plain JSON-RPC HTTP so tools like Postman
- * or curl can hit ONE URL and get automatic multi-provider failover -
- * symmetric with how eRPC works for EVM. Every response carries diagnostic
- * headers so you can SEE which provider served the request:
+ * or curl can hit ONE URL and get automatic multi-provider failover.
+ * Every response carries diagnostic headers so you can SEE which provider
+ * served the request:
  *
  *   X-RPC-Provider : provider that served this call (e.g. "helius")
  *   X-RPC-Attempts : how many providers were tried before success
@@ -21,7 +21,7 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { loadProviders, USDC_MINT } from "./config.js";
-import { FailoverRpcClient } from "./failover-client.js";
+import { FailoverRpcClient, RpcBusinessError } from "./failover-client.js";
 import {
   extractUsdcDeltas,
   extractUsdcTransfers,
@@ -77,6 +77,17 @@ async function handleSingle(
     const { result, provider, attempts } = await client.call<unknown>(reqObj.method, reqObj.params ?? []);
     return { response: { jsonrpc: "2.0", id, result }, provider, attempts };
   } catch (err) {
+    // A definitive provider error (invalid params, method not found, block not
+    // available, ...): pass the real JSON-RPC error straight through so the
+    // caller sees exactly what Solana said, plus which provider answered.
+    if (err instanceof RpcBusinessError) {
+      return {
+        response: { jsonrpc: "2.0", id, error: err.rpcError },
+        provider: err.provider || "-",
+        attempts: err.attempts,
+      };
+    }
+    // Only reached when every provider failed for transport/rate-limit reasons.
     return {
       response: {
         jsonrpc: "2.0",

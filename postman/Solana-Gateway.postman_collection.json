@@ -1,0 +1,284 @@
+{
+  "info": {
+    "name": "Solana Gateway (Full + Error Demo)",
+    "description": "Solana failover RPC gateway + USDC indexer (:4100).\n\nStart the service:\n  cd solana && docker compose up -d\n\nEvery response carries an X-RPC-Provider header showing which provider\n(helius / publicnode / solana-public; drpc & ankr disabled) served the call.\n\nAfter the failover fix, a provider's definitive JSON-RPC error (bad slot,\nbad params, unknown method) is passed through UNCHANGED with its real code\nand message - it is no longer masked as '-32000 All providers exhausted'.\nSee the '5. Error messages (after fix)' folder.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "solana", "value": "http://localhost:4100", "type": "string" },
+    { "key": "sol_wallet", "value": "G9L3ac8qYKNy1gTxdmhxTbDVyGHf5NAaSDYzvkgitVLJ", "type": "string" },
+    { "key": "sol_wallet2", "value": "5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD", "type": "string" },
+    { "key": "sol_usdc_mint", "value": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "type": "string" },
+    { "key": "sol_slot", "value": "435464598", "type": "string" },
+    { "key": "sol_sig", "value": "4ytJWAHfcc9BoP6J9RHtf2nVU7uAyFPngFtJwBy5LjywY7Nz88zoKiTfd4L4gVPzwD1iXqxDM8ExfF5DVaHcR1bc", "type": "string" },
+    { "key": "sol_token_account", "value": "GKjtxjNVsnCXqbzdKqWVNuKqKQjmYgRNvJfRHUsPpKZ9", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Health & stats (GET)",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/health", "host": ["{{solana}}"], "path": ["health"] },
+            "description": "Liveness + provider list. Expect status ok and 3 providers (helius, publicnode, solana-public)."
+          }
+        },
+        {
+          "name": "GET /stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/stats", "host": ["{{solana}}"], "path": ["stats"] },
+            "description": "Per-provider counters (requests / successes / rateLimited). API keys redacted."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. USDC transfers (GET, from->to)",
+      "item": [
+        {
+          "name": "GET /address/:wallet - USDC transfers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/address/{{sol_wallet}}?limit=30", "host": ["{{solana}}"], "path": ["address", "{{sol_wallet}}"], "query": [{ "key": "limit", "value": "30" }] },
+            "description": "USDC transfers touching a wallet. Each row: direction, from, to, amount, unit, price, valueUsd, block, signature. limit = signatures scanned (default 25, max 200)."
+          }
+        },
+        {
+          "name": "GET /block/:slot - USDC transfers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/block/{{sol_slot}}", "host": ["{{solana}}"], "path": ["block", "{{sol_slot}}"] },
+            "description": "All USDC transfers in a block (slot)."
+          }
+        },
+        {
+          "name": "GET /block/:slot?address= - filter one address",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/block/{{sol_slot}}?address=6LY1JzAFVZsP2a2xKrtU6znQMQ5h4i7tocWdgrkZzkzF", "host": ["{{solana}}"], "path": ["block", "{{sol_slot}}"], "query": [{ "key": "address", "value": "6LY1JzAFVZsP2a2xKrtU6znQMQ5h4i7tocWdgrkZzkzF" }] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Common JSON-RPC (POST /)",
+      "item": [
+        {
+          "name": "getSlot (proves live chain)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getSlot\",\n  \"params\": []\n}" }
+          }
+        },
+        {
+          "name": "getBlockHeight",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getBlockHeight\",\n  \"params\": []\n}" }
+          }
+        },
+        {
+          "name": "getBlockTime (valid slot -> unix time)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getBlockTime\",\n  \"params\": [{{sol_slot}}]\n}" },
+            "description": "Valid slot returns a unix timestamp, e.g. result: 1785124403."
+          }
+        },
+        {
+          "name": "getBalance (SOL)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getBalance\",\n  \"params\": [\"{{sol_wallet}}\"]\n}" }
+          }
+        },
+        {
+          "name": "getAccountInfo",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getAccountInfo\",\n  \"params\": [\"{{sol_wallet}}\", { \"encoding\": \"jsonParsed\" }]\n}" }
+          }
+        },
+        {
+          "name": "getLatestBlockhash",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getLatestBlockhash\",\n  \"params\": []\n}" }
+          }
+        },
+        {
+          "name": "getEpochInfo",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getEpochInfo\",\n  \"params\": []\n}" }
+          }
+        },
+        {
+          "name": "getVersion",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getVersion\",\n  \"params\": []\n}" }
+          }
+        },
+        {
+          "name": "getBlock (details=none)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getBlock\",\n  \"params\": [\n    {{sol_slot}},\n    { \"maxSupportedTransactionVersion\": 0, \"transactionDetails\": \"none\", \"rewards\": false }\n  ]\n}" }
+          }
+        },
+        {
+          "name": "getTransaction (stable historical sig)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getTransaction\",\n  \"params\": [\n    \"{{sol_sig}}\",\n    { \"encoding\": \"jsonParsed\", \"maxSupportedTransactionVersion\": 0 }\n  ]\n}" }
+          }
+        },
+        {
+          "name": "getSignaturesForAddress",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getSignaturesForAddress\",\n  \"params\": [\n    \"{{sol_wallet}}\",\n    { \"limit\": 10 }\n  ]\n}" }
+          }
+        },
+        {
+          "name": "getTokenAccountsByOwner (USDC)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getTokenAccountsByOwner\",\n  \"params\": [\n    \"{{sol_wallet}}\",\n    { \"mint\": \"{{sol_usdc_mint}}\" },\n    { \"encoding\": \"jsonParsed\" }\n  ]\n}" }
+          }
+        },
+        {
+          "name": "getTokenAccountBalance (real token account)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getTokenAccountBalance\",\n  \"params\": [\"{{sol_token_account}}\"]\n}" },
+            "description": "Pass a TOKEN ACCOUNT pubkey (not a mint, not a wallet)."
+          }
+        },
+        {
+          "name": "getTokenSupply (USDC mint)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getTokenSupply\",\n  \"params\": [\"{{sol_usdc_mint}}\"]\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Batch request (POST /)",
+      "item": [
+        {
+          "name": "batch: getSlot + getBlockHeight + getVersion",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "[\n  { \"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"getSlot\", \"params\": [] },\n  { \"jsonrpc\": \"2.0\", \"id\": 2, \"method\": \"getBlockHeight\", \"params\": [] },\n  { \"jsonrpc\": \"2.0\", \"id\": 3, \"method\": \"getVersion\", \"params\": [] }\n]" },
+            "description": "JSON-RPC batch. Response is an array; X-RPC-Batch header shows the count."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Error messages (after fix)",
+      "item": [
+        {
+          "name": "getBlockTime - unavailable slot -> -32004",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getBlockTime\",\n  \"params\": [9999999999]\n}" },
+            "description": "A slot with no block now returns the REAL error:\n{ error: { code: -32004, message: \"Block not available for slot 9999999999\" } }\nBefore the fix this was masked as '-32000 All providers exhausted'."
+          }
+        },
+        {
+          "name": "getBlockTime - missing param -> -32602",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getBlockTime\",\n  \"params\": []\n}" },
+            "description": "Returns { error: { code: -32602, message: \"Invalid params: Too few array elements provided\" } }."
+          }
+        },
+        {
+          "name": "unknown method -> -32601",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getStakeActivation\",\n  \"params\": [\"{{sol_wallet}}\"]\n}" },
+            "description": "Deprecated/removed method returns { error: { code: -32601, message: \"Method not found\" } }."
+          }
+        },
+        {
+          "name": "getTokenLargestAccounts USDC -> too many accounts",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getTokenLargestAccounts\",\n  \"params\": [\"{{sol_usdc_mint}}\"]\n}" },
+            "description": "Very large mint is rejected: { error: { code: -32600, message: \"Too many accounts requested ...\" } }."
+          }
+        },
+        {
+          "name": "missing method field -> -32600",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"params\": []\n}" },
+            "description": "Gateway-level validation: { error: { code: -32600, message: \"Invalid Request: missing method\" } }."
+          }
+        },
+        {
+          "name": "GET / (wrong method) -> 405 usage hint",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "description": "Root path only accepts POST. GET returns 405 with a usage hint."
+          }
+        }
+      ]
+    }
+  ]
+}
