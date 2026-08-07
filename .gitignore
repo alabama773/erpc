@@ -20,3 +20,6 @@ npm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+
+# Kilo tool working dir (local only, never commit)
+.kilo/
