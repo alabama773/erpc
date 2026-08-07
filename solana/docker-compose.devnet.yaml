@@ -1,0 +1,31 @@
+# Solana DEVNET failover gateway - runs alongside the mainnet one.
+#
+#   docker compose -f docker-compose.devnet.yaml up -d --build
+#   docker compose -f docker-compose.devnet.yaml logs -f
+#   docker compose -f docker-compose.devnet.yaml down
+#
+# Listens on :4101 (mainnet gateway keeps :4100). Cluster + devnet USDC mint are
+# forced via environment (these override whatever .env sets, so the same .env is
+# reused without changes). On devnet it uses HELIUS_DEVNET_RPC_URL /
+# SOLANA_DEVNET_RPC_URL if present, otherwise the public devnet endpoint.
+
+services:
+  solana-gateway-devnet:
+    build: .
+    image: solana-failover-gateway-devnet
+    container_name: solana-gateway-devnet
+    restart: unless-stopped
+    ports:
+      - "4101:4101"
+    env_file:
+      - .env
+    environment:
+      PORT: "4101"
+      SOLANA_CLUSTER: "devnet"
+      USDC_MINT: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4101/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

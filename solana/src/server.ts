@@ -20,7 +20,7 @@
  * This is intentionally dependency-free (Node's built-in http module).
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { loadProviders, USDC_MINT } from "./config.js";
+import { loadProviders, USDC_MINT, CLUSTER } from "./config.js";
 import { FailoverRpcClient, RpcBusinessError } from "./failover-client.js";
 import {
   extractUsdcDeltas,
@@ -265,7 +265,12 @@ async function getBlockUsdcTransfers(
 const server = createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
-      sendJson(res, 200, { status: "ok", providers: providers.map((p) => p.name) });
+      sendJson(res, 200, {
+        status: "ok",
+        cluster: CLUSTER,
+        usdcMint: USDC_MINT,
+        providers: providers.map((p) => p.name),
+      });
       return;
     }
     if (req.method === "GET" && req.url === "/stats") {
@@ -387,6 +392,7 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.error(`Solana failover gateway listening on http://localhost:${PORT}`);
+  console.error(`Cluster: ${CLUSTER}  |  USDC mint: ${USDC_MINT}`);
   console.error(`Providers (priority order): ${providers.map((p) => p.name).join(", ")}`);
   console.error(`  POST /             -> Solana JSON-RPC with failover (see X-RPC-Provider header)`);
   console.error(`  GET  /health       -> liveness + provider list`);

@@ -1,0 +1,133 @@
+{
+  "info": {
+    "name": "Solana Gateway - DEVNET (:4101)",
+    "description": "Devnet failover gateway + USDC indexer, on port 4101 (mainnet stays on 4100).\n\nStart it:\n  cd solana\n  docker compose -f docker-compose.devnet.yaml up -d --build\n\nHealth shows cluster=devnet and the devnet USDC mint.\n\n>>> TRACING THE EXAMPLE ADDRESS 5nFFCJPq...HS59 <<<\nThis wallet's activity on devnet is TWO plain SOL transfers (not USDC), so the\nUSDC /address endpoint returns empty for it (correct - it never held USDC).\nTo trace SOL / any transfer, use folder '2. Trace by RAW RPC':\n  step 1: getSignaturesForAddress  -> list the wallet's tx signatures\n  step 2: getTransaction           -> full detail of one signature (from/to/lamports)\n\nUse folder '3. USDC indexer' only when the wallet actually moved the devnet\nUSDC mint (4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU), or override the mint.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "solana", "value": "http://localhost:4101", "type": "string" },
+    { "key": "dev_wallet", "value": "5nFFCJPqPsNbvqJ8zTaarG7hf9Dh4R1RHVw2MifxHS59", "type": "string" },
+    { "key": "dev_sig_out", "value": "25fs7RG8DeyAAHkNZd2Rr1hgTFnriKDtxPVxy1y5PJteDdH7HKQsSnkgMNeehtS2rDDjF8CbjLqLa11FcaVGHg4g", "type": "string" },
+    { "key": "dev_sig_in", "value": "4asaG896YFy7xVWeTNF3uvgeAd1L5dNJzPh8uvuGoCCjsiiXeVVLozvawaiy2NEqZf1ug4kh9cAT1qDUSFrzAAhV", "type": "string" },
+    { "key": "dev_usdc_mint", "value": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Health & basics",
+      "item": [
+        {
+          "name": "GET /health (cluster=devnet)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/health", "host": ["{{solana}}"], "path": ["health"] },
+            "description": "Expect status ok, cluster devnet, usdcMint 4zMMC9srt5..., provider solana-devnet."
+          }
+        },
+        {
+          "name": "GET /stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/stats", "host": ["{{solana}}"], "path": ["stats"] }
+          }
+        },
+        {
+          "name": "getSlot (devnet live chain)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getSlot\",\n  \"params\": []\n}" }
+          }
+        },
+        {
+          "name": "getBalance (wallet SOL balance)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getBalance\",\n  \"params\": [\"{{dev_wallet}}\"]\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Trace by RAW RPC (works for SOL + any tx)",
+      "item": [
+        {
+          "name": "step 1: getSignaturesForAddress",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getSignaturesForAddress\",\n  \"params\": [\n    \"{{dev_wallet}}\",\n    { \"limit\": 10 }\n  ]\n}" },
+            "description": "Lists this wallet's recent transaction signatures. Copy a signature into the next request. For the example wallet you get 2 signatures ({{dev_sig_out}} and {{dev_sig_in}})."
+          }
+        },
+        {
+          "name": "step 2: getTransaction - SOL sent OUT",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getTransaction\",\n  \"params\": [\n    \"{{dev_sig_out}}\",\n    { \"encoding\": \"jsonParsed\", \"maxSupportedTransactionVersion\": 0 }\n  ]\n}" },
+            "description": "The wallet sending SOL out. Look at transaction.message.instructions[].parsed.info:\n  source      = {{dev_wallet}}\n  destination = 9hKtXHmXQBfw76uEAc8uSmEBKTCVLsbNqmjLuQxNJchE\n  lamports    = 5000000 (= 0.005 SOL)"
+          }
+        },
+        {
+          "name": "step 2: getTransaction - SOL received IN",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getTransaction\",\n  \"params\": [\n    \"{{dev_sig_in}}\",\n    { \"encoding\": \"jsonParsed\", \"maxSupportedTransactionVersion\": 0 }\n  ]\n}" },
+            "description": "The wallet receiving SOL. instructions[].parsed.info:\n  source      = dev2JBjyB5CshoGsiJCwzdmJYiEUwAXMdqDR7txoFBJ\n  destination = {{dev_wallet}}\n  lamports    = 5000000000 (= 5 SOL)"
+          }
+        },
+        {
+          "name": "getSignatureStatuses (confirm a signature)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getSignatureStatuses\",\n  \"params\": [\n    [\"{{dev_sig_out}}\"],\n    { \"searchTransactionHistory\": true }\n  ]\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. USDC indexer (only if wallet moved devnet USDC)",
+      "item": [
+        {
+          "name": "GET /address/:wallet (USDC transfers)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/address/{{dev_wallet}}?limit=30", "host": ["{{solana}}"], "path": ["address", "{{dev_wallet}}"], "query": [{ "key": "limit", "value": "30" }] },
+            "description": "USDC-only. For the example wallet this returns transfers:[] because it only did SOL transfers, never held the devnet USDC mint. Use folder 2 for SOL. If your tx moved a different SPL token, set USDC_MINT to that mint and restart the devnet container."
+          }
+        },
+        {
+          "name": "GET /block/:slot (USDC transfers in a block)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{solana}}/block/481713916", "host": ["{{solana}}"], "path": ["block", "481713916"] },
+            "description": "USDC transfers in the slot of the OUT tx. Empty for this example (SOL, not USDC)."
+          }
+        },
+        {
+          "name": "getTokenAccountsByOwner (devnet USDC)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{solana}}/", "host": ["{{solana}}"], "path": [""] },
+            "body": { "mode": "raw", "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"getTokenAccountsByOwner\",\n  \"params\": [\n    \"{{dev_wallet}}\",\n    { \"mint\": \"{{dev_usdc_mint}}\" },\n    { \"encoding\": \"jsonParsed\" }\n  ]\n}" },
+            "description": "Shows the wallet's devnet-USDC token accounts. Empty value[] for this example wallet = it never held devnet USDC."
+          }
+        }
+      ]
+    }
+  ]
+}
